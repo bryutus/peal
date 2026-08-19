@@ -1,0 +1,65 @@
+# Which escape sequence each terminal accepts for desktop notifications.
+#
+# `verified` marks entries confirmed by actual measurement, as opposed to
+# entries transcribed from documentation. `tested_version` records which
+# release was measured, where naming it is useful.
+
+# --- What each sequence can express -------------------------------------
+# Capabilities are a property of the sequence itself, not of the terminal.
+
+[sequences.osc9]
+form  = "OSC 9 ; <body> BEL"
+title = false
+body  = true
+id    = false
+
+[sequences.osc777]
+form  = "OSC 777 ; notify ; <title> ; <body> BEL"
+title = true
+body  = true
+id    = false
+
+[sequences.osc99]
+form  = "OSC 99 ; <metadata> ; <body> ST"
+title = true
+body  = true
+id    = true      # notifications can be replaced or deduplicated
+
+# --- Terminals -----------------------------------------------------------
+# `accepts` is ordered: richest first. Resolution walks the list and takes
+# the first entry that satisfies what the caller asked for.
+
+[[terminals]]
+id             = "ghostty"
+xtversion      = "ghostty"
+term_program   = ["ghostty"]
+term           = ["xterm-ghostty"]
+accepts        = ["osc777", "osc9"]
+verified       = true
+tested_version = "1.3.1"
+
+[[terminals]]
+id             = "kitty"
+xtversion      = "kitty"
+term_program   = []                 # kitty sets no TERM_PROGRAM
+term           = ["xterm-kitty"]
+accepts        = ["osc99", "osc777", "osc9"]
+verified       = true
+tested_version = "0.48.2"
+
+[[terminals]]
+id             = "iterm2"
+xtversion      = "iTerm2"
+term_program   = ["iTerm.app"]
+term           = []
+accepts        = ["osc9"]
+verified       = true
+tested_version = "3.6.11"
+
+[[terminals]]
+id             = "apple-terminal"
+xtversion      = ""                 # does not answer XTVERSION
+term_program   = ["Apple_Terminal"]
+term           = []
+accepts        = []                 # no OSC notification support; bell only
+verified       = true
