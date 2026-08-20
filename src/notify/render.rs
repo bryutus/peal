@@ -8,15 +8,29 @@ use crate::Sequence;
 /// An identifier no other notification will reuse.
 ///
 /// OSC 99 sends a title and a body as two separate escapes and joins them into one
-/// notification by their shared id, so an id is unavoidable even here. It has to differ
-/// every time: kitty replaces a notification that arrives under an id it has already
-/// seen, and replacing is not what an ordinary notification should do. Letting the
-/// caller choose the id deliberately, and so ask for replacement, is the next piece of
-/// work.
-fn osc99_id() -> String {
+/// notification by their shared id, so an id is unavoidable even when the caller named
+/// none. That id has to differ every time: kitty replaces a notification arriving under
+/// an id it has already seen, and replacing is not what an unnamed notification should
+/// do.
+fn anonymous_id() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let serial = COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("peal-{}-{serial}", std::process::id())
+}
+
+/// The caller's name for a notification, encoded so it cannot be read as anything but a
+/// name.
+///
+/// Metadata fields are separated by `:` and closed by `;`, so a name containing either
+/// would rewrite the escape around it. Encoding sidesteps the question entirely and
+/// leaves the caller free to use whatever names its own code already has — a path, a job
+/// name, a command line. The URL alphabet, unpadded, because `+`, `/` and `=` have no
+/// attested meaning inside this field.
+fn encode_id(id: &str) -> String {
+    base64(id.as_bytes())
+        .trim_end_matches('=')
+        .replace('+', "-")
+        .replace('/', "_")
 }
 
 /// Text with anything that could steer the terminal removed.
@@ -39,10 +53,11 @@ pub fn sanitize(text: &str) -> String {
 
 /// The bytes that ask the terminal to raise this notification.
 ///
-/// `title` is only honoured by dialects that can carry one; the caller is expected to
-/// have folded it into the body otherwise. Both fields are sanitised here rather than
-/// at the boundary so no route to the wire can skip it.
-pub fn bytes(sequence: Sequence, title: Option<&str>, body: &str) -> Vec<u8> {
+/// `title` and `id` are only honoured by dialects that can carry them; the caller is
+/// expected to have folded the title into the body and given up on the id otherwise.
+/// Title and body are sanitised here rather than at the boundary so no route to the wire
+/// can skip it.
+pub fn bytes(sequence: Sequence, title: Option<&str>, body: &str, id: Option<&str>) -> Vec<u8> {
     let title = title.map(sanitize).filter(|t| !t.is_empty());
     let body = sanitize(body);
 
@@ -72,7 +87,7 @@ pub fn bytes(sequence: Sequence, title: Option<&str>, body: &str) -> Vec<u8> {
         // separator, and `d=0` on the first chunk tells the terminal to hold the
         // notification until the second one arrives.
         Sequence::Osc99 => {
-            let id = osc99_id();
+            let id = id.map_or_else(anonymous_id, encode_id);
             match &title {
                 Some(title) => {
                     let mut out = osc99_chunk(&id, "d=0:p=title", title);
@@ -147,7 +162,7 @@ mod tests {
     #[test]
     fn writes_osc9() {
         assert_eq!(
-            bytes(Sequence::Osc9, None, "build finished"),
+            bytes(Sequence::Osc9, None, "build finished", None),
             b"\x1b]9;build finished\x07"
         );
     }
@@ -157,7 +172,7 @@ mod tests {
     #[test]
     fn osc9_ignores_a_title() {
         assert_eq!(
-            bytes(Sequence::Osc9, Some("peal"), "build finished"),
+            bytes(Sequence::Osc9, Some("peal"), "build finished", None),
             b"\x1b]9;build finished\x07"
         );
     }
@@ -165,7 +180,7 @@ mod tests {
     #[test]
     fn writes_osc777() {
         assert_eq!(
-            bytes(Sequence::Osc777, Some("peal"), "build finished"),
+            bytes(Sequence::Osc777, Some("peal"), "build finished", None),
             b"\x1b]777;notify;peal;build finished\x07"
         );
     }
@@ -175,14 +190,14 @@ mod tests {
     #[test]
     fn osc777_without_a_title_sends_the_body_as_the_title() {
         assert_eq!(
-            bytes(Sequence::Osc777, None, "build finished"),
+            bytes(Sequence::Osc777, None, "build finished", None),
             b"\x1b]777;notify;build finished\x07"
         );
     }
 
     #[test]
     fn writes_osc99_as_two_chunks_sharing_an_id() {
-        let sent = String::from_utf8(bytes(Sequence::Osc99, Some("peal"), "done")).unwrap();
+        let sent = String::from_utf8(bytes(Sequence::Osc99, Some("peal"), "done", None)).unwrap();
         let id = osc99_id_of(&sent);
         assert_eq!(
             sent,
@@ -194,17 +209,17 @@ mod tests {
 
     #[test]
     fn writes_osc99_without_a_title_as_one_chunk() {
-        let sent = String::from_utf8(bytes(Sequence::Osc99, None, "done")).unwrap();
+        let sent = String::from_utf8(bytes(Sequence::Osc99, None, "done", None)).unwrap();
         let id = osc99_id_of(&sent);
         assert_eq!(sent, format!("\x1b]99;i={id}:d=1:e=1;ZG9uZQ==\x1b\\"));
     }
 
-    /// kitty replaces a notification whose id it has seen before, so reusing one would
-    /// make every notification erase the last.
+    /// kitty replaces a notification whose id it has seen before, so an unnamed one must
+    /// never reuse an id or every notification would erase the last.
     #[test]
-    fn each_osc99_notification_gets_its_own_id() {
-        let first = bytes(Sequence::Osc99, None, "done");
-        let second = bytes(Sequence::Osc99, None, "done");
+    fn each_anonymous_osc99_notification_gets_its_own_id() {
+        let first = bytes(Sequence::Osc99, None, "done", None);
+        let second = bytes(Sequence::Osc99, None, "done", None);
         assert_ne!(
             osc99_id_of(&String::from_utf8(first).unwrap()),
             osc99_id_of(&String::from_utf8(second).unwrap())
@@ -227,9 +242,44 @@ mod tests {
     #[test]
     fn an_empty_title_is_no_title() {
         assert_eq!(
-            bytes(Sequence::Osc777, Some("  "), "done"),
-            bytes(Sequence::Osc777, None, "done")
+            bytes(Sequence::Osc777, Some("  "), "done", None),
+            bytes(Sequence::Osc777, None, "done", None)
         );
+    }
+
+    /// A named notification keeps its name across sends, which is what makes the second
+    /// one replace the first.
+    #[test]
+    fn a_named_osc99_notification_reuses_its_id() {
+        let first =
+            String::from_utf8(bytes(Sequence::Osc99, None, "first", Some("build"))).unwrap();
+        let second =
+            String::from_utf8(bytes(Sequence::Osc99, None, "second", Some("build"))).unwrap();
+        let other =
+            String::from_utf8(bytes(Sequence::Osc99, None, "first", Some("deploy"))).unwrap();
+        assert_eq!(osc99_id_of(&first), osc99_id_of(&second));
+        assert_ne!(osc99_id_of(&first), osc99_id_of(&other));
+    }
+
+    /// `:` ends a metadata field and `;` ends the metadata, so a name containing either
+    /// would rewrite the escape around it if it went out as written.
+    #[test]
+    fn an_id_cannot_break_out_of_its_field() {
+        let sent =
+            String::from_utf8(bytes(Sequence::Osc99, None, "done", Some("a:b;p=body"))).unwrap();
+        let id = osc99_id_of(&sent);
+        assert!(!id.contains(':'), "{id}");
+        assert!(!id.contains(';'), "{id}");
+        assert_eq!(sent, format!("\x1b]99;i={id}:d=1:e=1;ZG9uZQ==\x1b\\"));
+    }
+
+    /// Unpadded, and using the two characters the URL alphabet substitutes.
+    #[test]
+    fn encodes_an_id_with_the_url_alphabet() {
+        assert_eq!(encode_id(""), "");
+        assert_eq!(encode_id("build"), "YnVpbGQ");
+        assert_eq!(encode_id("~~~"), "fn5-");
+        assert_eq!(encode_id("~~?"), "fn4_");
     }
 
     #[test]
