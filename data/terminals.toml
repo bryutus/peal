@@ -26,8 +26,10 @@ body  = true
 id    = true      # notifications can be replaced or deduplicated
 
 # --- Terminals -----------------------------------------------------------
-# `accepts` is ordered: richest first. Resolution walks the list and takes
-# the first entry that satisfies what the caller asked for.
+# `accepts` is ordered: richest first. Sending is the other way round — it
+# takes the least expressive entry that still carries what was asked for,
+# so that no field has to go out empty. Ghostty, for one, wants all three
+# fields of an OSC 777 and raises nothing when the body is left off.
 
 [[terminals]]
 id             = "ghostty"

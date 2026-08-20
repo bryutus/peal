@@ -6,6 +6,7 @@ use std::sync::LazyLock;
 use serde::Deserialize;
 
 pub mod detect;
+pub mod notify;
 
 /// The capability table, embedded at compile time so the binary stays self-contained.
 const TERMINALS_TOML: &str = include_str!("../data/terminals.toml");
@@ -49,7 +50,8 @@ pub struct Terminal {
     pub xtversion: String,
     pub term_program: Vec<String>,
     pub term: Vec<String>,
-    /// Ordered, richest first. Resolution takes the first entry that satisfies the request.
+    /// Ordered, richest first. Sending goes the other way and takes the least expressive
+    /// entry that still carries what was asked for.
     pub accepts: Vec<Sequence>,
     /// True when the entry was confirmed by measurement rather than transcribed from docs.
     pub verified: bool,
