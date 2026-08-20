@@ -26,6 +26,12 @@ pub struct Measurement {
     /// The operating system it was measured on, which the table does not record because
     /// every entry in it so far came from the same one.
     pub os: &'static str,
+    /// Whether tmux stood between peal and the terminal.
+    ///
+    /// The dialects are wrapped to reach past it, so the answers should be the same
+    /// either way — but "should be" is what a measurement is for, and a reader comparing
+    /// two entries that disagree will want to know this about them.
+    pub through_tmux: bool,
 }
 
 impl Measurement {
@@ -58,7 +64,10 @@ pub fn entry(measurement: &Measurement) -> String {
         .map(|sequence| format!("\"{}\"", sequence.key()))
         .collect();
 
-    let mut out = format!("# Measured on {}\n", measurement.os);
+    let mut out = match measurement.through_tmux {
+        true => format!("# Measured on {}, through tmux\n", measurement.os),
+        false => format!("# Measured on {}\n", measurement.os),
+    };
     out.push_str("[[terminals]]\n");
     let _ = writeln!(out, "id             = \"{}\"", measurement.id());
     let _ = writeln!(
@@ -228,6 +237,10 @@ pub fn run() -> io::Result<String> {
             ),
             None,
         );
+        let bytes = match detect::inside_tmux() {
+            true => detect::query::through_tmux(&bytes),
+            false => bytes,
+        };
         tty.write_all(&bytes)?;
         tty.flush()?;
 
@@ -241,13 +254,25 @@ pub fn run() -> io::Result<String> {
         }
     }
 
+    // Under tmux both variables describe the multiplexer, not the terminal beyond it:
+    // TERM_PROGRAM is overwritten with "tmux" and TERM with one of its own. Recording
+    // either would make every terminal running under tmux look like this one.
+    let (term_program, term) = match detect::inside_tmux() {
+        true => (None, None),
+        false => (
+            nonempty(std::env::var("TERM_PROGRAM").ok()),
+            identifying_term(nonempty(std::env::var("TERM").ok())),
+        ),
+    };
+
     let measurement = Measurement {
         xtversion,
         version,
-        term_program: nonempty(std::env::var("TERM_PROGRAM").ok()),
-        term: identifying_term(nonempty(std::env::var("TERM").ok())),
+        term_program,
+        term,
         accepts,
         os: std::env::consts::OS,
+        through_tmux: detect::inside_tmux(),
     };
 
     let mut out = String::from("\n");
@@ -271,28 +296,42 @@ fn nonempty(value: Option<String>) -> Option<String> {
 
 /// What the entry had to leave out, and what that costs.
 fn identification_note(measurement: &Measurement) -> Option<String> {
-    let set_term = std::env::var("TERM").ok().filter(|term| !term.is_empty());
-    let dropped = set_term.filter(|term| GENERIC_TERMS.contains(&term.as_str()));
-
     let identifiable = measurement.xtversion.is_some()
         || measurement.term_program.is_some()
         || measurement.term.is_some();
-
-    match (dropped, identifiable) {
-        (_, false) => Some(
-            "  This terminal cannot be identified. It answers no XTVERSION, sets no\n\
-             \x20 TERM_PROGRAM, and its TERM names a capability set rather than itself, so\n\
-             \x20 peal has no way to tell it from any other terminal. The entry below is a\n\
-             \x20 measurement, not something that can be acted on yet.\n"
+    if !identifiable {
+        return Some(
+            "  This terminal cannot be identified. It gave no name of its own, and the\n\
+             \x20 environment holds nothing that names it either, so peal has no way to\n\
+             \x20 tell it from any other terminal. The entry below is a measurement, not\n\
+             \x20 something that can be acted on yet.\n"
                 .to_owned(),
-        ),
-        (Some(term), true) => Some(format!(
-            "  TERM is \"{term}\", which names a set of capabilities rather than this\n\
-             \x20 terminal, so it is left out of the entry. Recording it would match every\n\
-             \x20 other terminal that claims the same set.\n"
-        )),
-        (None, true) => None,
+        );
     }
+
+    // Under tmux the environment describes tmux, so the name the terminal gave is the
+    // only field left that identifies it. The dialects are still measured through to the
+    // real terminal, which is what the entry is mostly for.
+    if measurement.through_tmux {
+        return Some(
+            "  Measured through tmux, which overwrites TERM_PROGRAM and TERM with its\n\
+             \x20 own. Neither names the terminal beyond it, so both are left out and the\n\
+             \x20 name the terminal gave is all that identifies it here. An entry measured\n\
+             \x20 outside tmux would carry more; the dialects below are the same either\n\
+             \x20 way, the wrapper reaching the real terminal.\n"
+                .to_owned(),
+        );
+    }
+
+    let dropped = std::env::var("TERM")
+        .ok()
+        .filter(|term| !term.is_empty())
+        .filter(|term| GENERIC_TERMS.contains(&term.as_str()))?;
+    Some(format!(
+        "  TERM is \"{dropped}\", which names a set of capabilities rather than this\n\
+         \x20 terminal, so it is left out of the entry. Recording it would match every\n\
+         \x20 other terminal that claims the same set.\n"
+    ))
 }
 
 /// Asks until the answer is one of the two it can use. A mistyped answer here would
@@ -326,6 +365,7 @@ mod tests {
             term: Some("xterm-ghostty".to_owned()),
             accepts,
             os: "macos",
+            through_tmux: false,
         }
     }
 
@@ -356,6 +396,7 @@ mod tests {
             term: None,
             accepts: vec![],
             os: "macos",
+            through_tmux: false,
         };
         let appended = format!(
             "{}\n{}",
@@ -374,6 +415,17 @@ mod tests {
     #[test]
     fn records_which_system_it_was_measured_on() {
         assert!(entry(&measured(vec![])).starts_with("# Measured on macos\n"));
+    }
+
+    /// Two entries for one terminal that disagree are worth telling apart, and whether
+    /// tmux was in the way is the first thing to check.
+    #[test]
+    fn records_that_tmux_was_in_the_way() {
+        let through = Measurement {
+            through_tmux: true,
+            ..measured(vec![Sequence::Osc9])
+        };
+        assert!(entry(&through).starts_with("# Measured on macos, through tmux\n"));
     }
 
     /// The ids in the table were derived this way; a probe of one of those terminals has
@@ -442,6 +494,24 @@ mod tests {
         );
     }
 
+    /// tmux overwrites TERM_PROGRAM with its own name, so an entry recording it would
+    /// match every terminal running under tmux rather than the one measured.
+    #[test]
+    fn says_the_environment_describes_tmux_rather_than_the_terminal() {
+        let through = Measurement {
+            term_program: None,
+            term: None,
+            through_tmux: true,
+            ..measured(vec![Sequence::Osc9])
+        };
+        let note = identification_note(&through).expect("a note");
+        assert!(note.contains("overwrites TERM_PROGRAM"), "{note}");
+
+        let entry = entry(&through);
+        assert!(entry.contains("term_program   = []"), "{entry}");
+        assert!(entry.contains("term           = []"), "{entry}");
+    }
+
     /// Every terminal in the table can be identified some way; an entry that cannot be
     /// would break that, so it has to be flagged rather than quietly filed.
     #[test]
@@ -453,6 +523,15 @@ mod tests {
             ..measured(vec![Sequence::Osc9])
         };
         let note = identification_note(&anonymous).expect("a note");
+        assert!(note.contains("cannot be identified"), "{note}");
+
+        // Even under tmux, where the environment is expected to be useless, a terminal
+        // that gave no name of its own is the more pressing thing to say.
+        let both = Measurement {
+            through_tmux: true,
+            ..anonymous
+        };
+        let note = identification_note(&both).expect("a note");
         assert!(note.contains("cannot be identified"), "{note}");
     }
 
