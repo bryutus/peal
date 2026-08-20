@@ -43,14 +43,26 @@ pub fn run() -> std::io::Result<String> {
 fn terminal_section(out: &mut String, resolution: &Resolution, inside_tmux: bool) {
     out.push_str("Terminal\n");
     match resolution {
-        Resolution::Known { terminal, evidence } => {
+        Resolution::Known {
+            terminal,
+            evidence,
+            version,
+        } => {
             let _ = writeln!(out, "  {} — {}", terminal.id, describe(*evidence));
             match (&terminal.tested_version, terminal.verified) {
-                (Some(version), true) => {
+                (Some(tested), true) => {
                     let _ = writeln!(
                         out,
-                        "  Measured on version {version}, so what follows was observed rather than assumed."
+                        "  Measured on version {tested}, so what follows was observed rather than assumed."
                     );
+                    // A terminal can gain or lose a dialect between releases, so a
+                    // reader on a different one should know the table may be behind.
+                    if let Some(running) = version.as_deref().filter(|v| *v != tested) {
+                        let _ = writeln!(
+                            out,
+                            "  You are running {running}. Anything below may have changed since."
+                        );
+                    }
                 }
                 (None, true) => {
                     out.push_str(
@@ -62,11 +74,21 @@ fn terminal_section(out: &mut String, resolution: &Resolution, inside_tmux: bool
                 ),
             }
         }
-        Resolution::UnknownButModern { name } => {
-            let _ = writeln!(
-                out,
-                "  {name} — named itself, but peal has no entry for it."
-            );
+        Resolution::UnknownButModern { name, version } => {
+            match version {
+                Some(version) => {
+                    let _ = writeln!(
+                        out,
+                        "  {name} {version} — named itself, but peal has no entry for it."
+                    );
+                }
+                None => {
+                    let _ = writeln!(
+                        out,
+                        "  {name} — named itself, but peal has no entry for it."
+                    );
+                }
+            }
             out.push_str(
                 "  Answering XTVERSION at all suggests it will take an OSC 9, since every\n\
                  \x20 terminal measured so far did. That is an extrapolation from four terminals\n\
@@ -249,6 +271,7 @@ mod tests {
         Resolution::Known {
             terminal: database().terminal(id).expect("terminal in the table"),
             evidence,
+            version: None,
         }
     }
 
@@ -323,11 +346,34 @@ mod tests {
     #[test]
     fn marks_an_unlisted_terminal_as_extrapolation() {
         let resolution = Resolution::UnknownButModern {
-            name: "WezTerm".to_owned(),
+            name: "Nonesuch".to_owned(),
+            version: None,
         };
         let report = report(&resolution, false, None);
-        assert!(report.contains("WezTerm"), "{report}");
+        assert!(report.contains("Nonesuch"), "{report}");
         assert!(report.contains("extrapolation"), "{report}");
+    }
+
+    /// The table records the version it was measured against. A reader on a newer one
+    /// is reading something that may have gone stale.
+    #[test]
+    fn warns_when_the_running_version_is_not_the_measured_one() {
+        let resolution = Resolution::Known {
+            terminal: database().terminal("ghostty").expect("in the table"),
+            evidence: Evidence::XtVersion,
+            version: Some("1.4.0".to_owned()),
+        };
+        let newer = report(&resolution, false, None);
+        assert!(newer.contains("Measured on version 1.3.1"), "{newer}");
+        assert!(newer.contains("You are running 1.4.0"), "{newer}");
+
+        let same = Resolution::Known {
+            terminal: database().terminal("ghostty").expect("in the table"),
+            evidence: Evidence::XtVersion,
+            version: Some("1.3.1".to_owned()),
+        };
+        let matching = report(&same, false, None);
+        assert!(!matching.contains("You are running"), "{matching}");
     }
 
     #[test]

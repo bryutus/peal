@@ -6,9 +6,27 @@
 /// standardised: measurement showed `ghostty 1.3.1` and `kitty(0.48.2)`, so the name
 /// is the leading run up to the first space or `(`.
 pub fn terminal_name(reply: &str) -> Option<&str> {
-    let payload = payload(reply)?;
-    let name = payload.split([' ', '(']).next().unwrap_or("").trim();
-    (!name.is_empty()).then_some(name)
+    Some(split_name(payload(reply)?)?.0)
+}
+
+/// The version alongside the name, where the terminal gave one.
+///
+/// Only `probe` wants this: identifying a terminal does not depend on the version, but
+/// recording which version a measurement was taken against does.
+pub fn terminal_version(reply: &str) -> Option<&str> {
+    let version = split_name(payload(reply)?)?.1?.trim_end_matches(')').trim();
+    (!version.is_empty()).then_some(version)
+}
+
+/// Splits `ghostty 1.3.1` and `kitty(0.48.2)` alike into their two halves.
+fn split_name(payload: &str) -> Option<(&str, Option<&str>)> {
+    let cut = payload.find([' ', '(']);
+    let (name, rest) = match cut {
+        Some(cut) => (&payload[..cut], Some(&payload[cut + 1..])),
+        None => (payload, None),
+    };
+    let name = name.trim();
+    (!name.is_empty()).then_some((name, rest))
 }
 
 /// Strips the `DCS > |` prefix and the string terminator, tolerating whatever
@@ -73,6 +91,30 @@ mod tests {
     fn rejects_an_empty_payload() {
         assert_eq!(terminal_name("\x1bP>|\x1b\\"), None);
         assert_eq!(terminal_name("\x1bP>|   \x1b\\"), None);
+    }
+
+    #[test]
+    fn reads_the_version_beside_the_name() {
+        assert_eq!(
+            terminal_version("\x1bP>|ghostty 1.3.1\x1b\\"),
+            Some("1.3.1")
+        );
+        assert_eq!(
+            terminal_version("\x1bP>|kitty(0.48.2)\x1b\\"),
+            Some("0.48.2")
+        );
+        assert_eq!(
+            terminal_version("\x1bP>|iTerm2 3.6.11\x1b\\"),
+            Some("3.6.11")
+        );
+    }
+
+    /// A terminal may name itself and stop there.
+    #[test]
+    fn tolerates_a_reply_with_no_version() {
+        assert_eq!(terminal_name("\x1bP>|contour\x1b\\"), Some("contour"));
+        assert_eq!(terminal_version("\x1bP>|contour\x1b\\"), None);
+        assert_eq!(terminal_version("\x1bP>|contour \x1b\\"), None);
     }
 
     /// The read may return the reply with nothing following it, terminator included.

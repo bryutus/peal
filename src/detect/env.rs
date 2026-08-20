@@ -60,9 +60,11 @@ mod tests {
         assert_eq!(by_xtversion(db, "GHOSTTY").map(|t| &*t.id), Some("ghostty"));
     }
 
+    /// The name is deliberately one no terminal has. Using a real unlisted terminal
+    /// would make this test fail the day that terminal is measured and added.
     #[test]
     fn does_not_match_an_unknown_name() {
-        assert!(by_xtversion(database(), "wezterm").is_none());
+        assert!(by_xtversion(database(), "nonesuch").is_none());
     }
 
     /// Terminal.app answers no XTVERSION, so its entry records an empty name. An empty
@@ -102,6 +104,6 @@ mod tests {
 
     #[test]
     fn does_not_identify_an_unknown_environment() {
-        assert!(by_env(database(), Some("WezTerm"), Some("wezterm")).is_none());
+        assert!(by_env(database(), Some("Nonesuch"), Some("nonesuch")).is_none());
     }
 }

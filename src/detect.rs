@@ -29,6 +29,12 @@ pub enum Resolution {
     Known {
         terminal: &'static Terminal,
         evidence: Evidence,
+        /// The version this terminal reported just now, where it reported one.
+        ///
+        /// Not the same thing as [`Terminal::tested_version`], which records the version
+        /// the table entry was measured against and may be several releases behind what
+        /// is actually running.
+        version: Option<String>,
     },
     /// The terminal named itself but is absent from the table.
     ///
@@ -36,7 +42,10 @@ pub enum Resolution {
     /// so OSC 9 is the reasonable guess. It stays a guess: the sample behind that
     /// reasoning is four terminals on one platform, and this variant exists so callers
     /// and `doctor` can say so rather than presenting it as fact.
-    UnknownButModern { name: String },
+    UnknownButModern {
+        name: String,
+        version: Option<String>,
+    },
     /// A terminal is attached but would not identify itself. Only the bell is safe.
     Unknown,
     /// No controlling terminal — a pipe, a cron job, CI. Nothing to notify.
@@ -67,6 +76,7 @@ pub fn resolve() -> std::io::Result<Resolution> {
 
     Ok(resolve_from(
         parse::terminal_name(&reply),
+        parse::terminal_version(&reply),
         term_program.as_deref(),
         term.as_deref(),
     ))
@@ -76,30 +86,44 @@ pub fn resolve() -> std::io::Result<Resolution> {
 /// tested against terminals that are not installed on the machine running the tests.
 pub fn resolve_from(
     xtversion_name: Option<&str>,
+    xtversion_version: Option<&str>,
     term_program: Option<&str>,
     term: Option<&str>,
 ) -> Resolution {
     let db = database();
+    let version = xtversion_version.map(str::to_owned);
 
     if let Some(name) = xtversion_name {
         if let Some(terminal) = env::by_xtversion(db, name) {
             return Resolution::Known {
                 terminal,
                 evidence: Evidence::XtVersion,
+                version,
             };
         }
         // The environment still gets a say: a terminal we do not recognise by name may
         // yet be one the table knows, and a match there is firmer than the guess below.
         if let Some((terminal, evidence)) = env::by_env(db, term_program, term) {
-            return Resolution::Known { terminal, evidence };
+            return Resolution::Known {
+                terminal,
+                evidence,
+                version,
+            };
         }
         return Resolution::UnknownButModern {
             name: name.to_owned(),
+            version,
         };
     }
 
     match env::by_env(db, term_program, term) {
-        Some((terminal, evidence)) => Resolution::Known { terminal, evidence },
+        // A terminal that answers no XTVERSION reports no version either; the table
+        // knows what it can do, not which release is running.
+        Some((terminal, evidence)) => Resolution::Known {
+            terminal,
+            evidence,
+            version: None,
+        },
         None => Resolution::Unknown,
     }
 }
@@ -110,7 +134,9 @@ mod tests {
 
     fn known(resolution: &Resolution) -> (&str, Evidence) {
         match resolution {
-            Resolution::Known { terminal, evidence } => (&terminal.id, *evidence),
+            Resolution::Known {
+                terminal, evidence, ..
+            } => (&terminal.id, *evidence),
             other => panic!("expected a known terminal, got {other:?}"),
         }
     }
@@ -119,13 +145,18 @@ mod tests {
     fn prefers_the_terminals_own_answer() {
         // kitty run from a shell that inherited iTerm2's environment: the query wins,
         // because the variables describe whatever launched the terminal.
-        let resolution = resolve_from(Some("kitty"), Some("iTerm.app"), Some("xterm-256color"));
+        let resolution = resolve_from(
+            Some("kitty"),
+            None,
+            Some("iTerm.app"),
+            Some("xterm-256color"),
+        );
         assert_eq!(known(&resolution), ("kitty", Evidence::XtVersion));
     }
 
     #[test]
     fn falls_back_to_the_environment_when_the_terminal_stays_silent() {
-        let resolution = resolve_from(None, Some("Apple_Terminal"), Some("xterm-256color"));
+        let resolution = resolve_from(None, None, Some("Apple_Terminal"), Some("xterm-256color"));
         assert_eq!(
             known(&resolution),
             ("apple-terminal", Evidence::TermProgram)
@@ -135,26 +166,47 @@ mod tests {
     /// A name we do not know does not discard an environment we do.
     #[test]
     fn an_unknown_name_still_lets_the_environment_decide() {
-        let resolution = resolve_from(Some("tmux"), None, Some("xterm-kitty"));
+        let resolution = resolve_from(Some("tmux"), None, None, Some("xterm-kitty"));
         assert_eq!(known(&resolution), ("kitty", Evidence::Term));
     }
 
     #[test]
     fn reports_an_unlisted_terminal_as_a_guess() {
-        let resolution = resolve_from(Some("WezTerm"), Some("WezTerm"), Some("wezterm"));
+        let resolution = resolve_from(Some("Nonesuch"), None, Some("Nonesuch"), Some("nonesuch"));
         assert_eq!(
             resolution,
             Resolution::UnknownButModern {
-                name: "WezTerm".to_owned()
+                name: "Nonesuch".to_owned(),
+                version: None,
+            }
+        );
+    }
+
+    /// The version travels with the name so that probe can record which release it
+    /// measured, whether or not the terminal is one the table already knows.
+    #[test]
+    fn keeps_the_version_the_terminal_reported() {
+        let listed = resolve_from(Some("ghostty"), Some("1.4.0"), None, None);
+        assert!(
+            matches!(listed, Resolution::Known { version: Some(ref v), .. } if v == "1.4.0"),
+            "{listed:?}"
+        );
+
+        let unlisted = resolve_from(Some("Nonesuch"), Some("20260101-abc"), None, None);
+        assert_eq!(
+            unlisted,
+            Resolution::UnknownButModern {
+                name: "Nonesuch".to_owned(),
+                version: Some("20260101-abc".to_owned()),
             }
         );
     }
 
     #[test]
     fn reports_a_terminal_that_says_nothing_at_all_as_unknown() {
-        assert_eq!(resolve_from(None, None, None), Resolution::Unknown);
+        assert_eq!(resolve_from(None, None, None, None), Resolution::Unknown);
         assert_eq!(
-            resolve_from(None, Some("WezTerm"), Some("wezterm")),
+            resolve_from(None, None, Some("Nonesuch"), Some("nonesuch")),
             Resolution::Unknown
         );
     }
