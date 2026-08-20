@@ -77,38 +77,70 @@ const GUESS: [Sequence; 1] = [Sequence::Osc9];
 /// not report back, and on macOS the system silently drops notifications from an
 /// application that has not been permitted to post them.
 pub fn notify(notification: &Notification) -> io::Result<Delivery> {
-    let resolution = detect::resolve()?;
-    let accepts: &[Sequence] = match &resolution {
-        Resolution::Known { terminal, .. } => &terminal.accepts,
-        Resolution::UnknownButModern { .. } => &GUESS,
-        Resolution::Unknown => &[],
-        Resolution::NoTty => return Ok(Delivery::Nothing),
-    };
+    to(&detect::resolve()?, notification)
+}
 
+/// Shows a notification on a terminal already identified.
+///
+/// The same as [`notify`], for a caller that has a [`Resolution`] in hand and should not
+/// pay for another round trip to the terminal to get one.
+pub fn to(resolution: &Resolution, notification: &Notification) -> io::Result<Delivery> {
+    let Some(accepts) = accepted(resolution) else {
+        return Ok(Delivery::Nothing);
+    };
     let Some(mut tty) = detect::query::open_tty()? else {
         return Ok(Delivery::Nothing);
     };
 
-    let (bytes, delivery) = match plan(accepts, notification) {
-        Some(plan) => (
-            render::bytes(
-                plan.sequence,
-                plan.title.as_deref(),
-                &plan.body,
-                plan.id.as_deref(),
-            ),
-            Delivery::Sent {
-                sequence: plan.sequence,
-                folded_title: notification.title.is_some() && plan.title.is_none(),
-                dropped_id: notification.id.is_some() && plan.id.is_none(),
-            },
+    let plan = plan(accepts, notification);
+    let bytes = match &plan {
+        Some(plan) => render::bytes(
+            plan.sequence,
+            plan.title.as_deref(),
+            &plan.body,
+            plan.id.as_deref(),
         ),
-        None => (b"\x07".to_vec(), Delivery::Bell),
+        None => b"\x07".to_vec(),
     };
 
     tty.write_all(&bytes)?;
     tty.flush()?;
-    Ok(delivery)
+    Ok(delivery_of(notification, plan.as_ref()))
+}
+
+/// What [`notify`] would do with this notification, without doing it.
+///
+/// Answers the question `doctor` asks four times over — what happens to a notification
+/// with a title, with a name, with both, with neither — without putting four
+/// notifications on the screen to find out.
+pub fn preview(resolution: &Resolution, notification: &Notification) -> Delivery {
+    let Some(accepts) = accepted(resolution) else {
+        return Delivery::Nothing;
+    };
+    delivery_of(notification, plan(accepts, notification).as_ref())
+}
+
+/// The dialects available on this terminal, or `None` when there is no terminal.
+fn accepted(resolution: &Resolution) -> Option<&[Sequence]> {
+    match resolution {
+        Resolution::Known { terminal, .. } => Some(&terminal.accepts),
+        Resolution::UnknownButModern { .. } => Some(&GUESS),
+        Resolution::Unknown => Some(&[]),
+        Resolution::NoTty => None,
+    }
+}
+
+/// What became of the notification, by comparing what was asked for against what the
+/// chosen dialect could take.
+fn delivery_of(notification: &Notification, plan: Option<&Plan>) -> Delivery {
+    match plan {
+        Some(plan) => Delivery::Sent {
+            sequence: plan.sequence,
+            folded_title: notification.title.is_some() && plan.title.is_none(),
+            dropped_id: notification.id.is_some() && plan.id.is_none(),
+        },
+        None => Delivery::Bell,
+    }
 }
 
 /// A notification reduced to what one dialect can carry.
