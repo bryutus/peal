@@ -8,6 +8,7 @@ use serde::Deserialize;
 pub mod detect;
 pub mod doctor;
 pub mod notify;
+pub mod probe;
 
 /// The capability table, embedded at compile time so the binary stays self-contained.
 const TERMINALS_TOML: &str = include_str!("../data/terminals.toml");
@@ -28,6 +29,20 @@ pub enum Sequence {
 impl Sequence {
     /// Every dialect, for exhaustiveness checks in tests.
     pub const ALL: [Sequence; 3] = [Sequence::Osc9, Sequence::Osc777, Sequence::Osc99];
+}
+
+impl Sequence {
+    /// The name this dialect goes by in `data/terminals.toml`.
+    ///
+    /// The same string serde reads and writes, spelled out here because `probe` builds
+    /// its entry as text in order to lay it out the way the file already looks.
+    pub fn key(self) -> &'static str {
+        match self {
+            Sequence::Osc9 => "osc9",
+            Sequence::Osc777 => "osc777",
+            Sequence::Osc99 => "osc99",
+        }
+    }
 }
 
 /// The name a dialect goes by, as opposed to the wire format in [`Capability::form`].
@@ -173,6 +188,19 @@ mod tests {
                 "{}: no way to identify this terminal",
                 terminal.id
             );
+        }
+    }
+
+    /// The hand-written key has to stay in step with what serde reads, or a probe would
+    /// produce an entry the crate then refuses to parse.
+    #[test]
+    fn every_key_is_the_one_serde_knows() {
+        for sequence in Sequence::ALL {
+            let round_tripped: Sequence =
+                toml::from_str(&format!("value = \"{}\"", sequence.key()))
+                    .map(|table: std::collections::BTreeMap<String, Sequence>| table["value"])
+                    .unwrap_or_else(|e| panic!("{}: {e}", sequence.key()));
+            assert_eq!(round_tripped, sequence);
         }
     }
 
