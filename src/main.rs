@@ -3,14 +3,15 @@
 use std::io::Write as _;
 use std::process::ExitCode;
 
-use peal::doctor;
 use peal::notify::{self, Delivery, Notification};
+use peal::{doctor, probe};
 
 const USAGE: &str = "\
 peal — raise a desktop notification from the terminal
 
     peal [--title <title>] [--name <name>] <body>
     peal doctor
+    peal probe
 
     --title <title>   A heading above the body. Terminals that cannot show one
                       separately are given \"title: body\" instead.
@@ -20,6 +21,9 @@ peal — raise a desktop notification from the terminal
 
     doctor            Report what peal will do on this terminal, and send one
                       notification to check it against.
+    probe             Measure a terminal peal does not know, by sending every
+                      dialect and asking which ones appeared. Prints an entry
+                      for data/terminals.toml.
 ";
 
 fn main() -> ExitCode {
@@ -30,6 +34,13 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(Command::Doctor) => match doctor::run() {
+            Ok(report) => {
+                print!("{report}");
+                ExitCode::SUCCESS
+            }
+            Err(error) => fail(&error),
+        },
+        Ok(Command::Probe) => match probe::run() {
             Ok(report) => {
                 print!("{report}");
                 ExitCode::SUCCESS
@@ -97,6 +108,7 @@ fn announce(delivery: &Delivery) {
 enum Command {
     Notify(Notification),
     Doctor,
+    Probe,
     Help,
 }
 
@@ -110,6 +122,7 @@ impl Command {
         if arguments.len() == 1 {
             match arguments[0].as_str() {
                 "doctor" => return Ok(Command::Doctor),
+                "probe" => return Ok(Command::Probe),
                 "-h" | "--help" => return Ok(Command::Help),
                 _ => {}
             }
@@ -196,8 +209,9 @@ mod tests {
     }
 
     #[test]
-    fn doctor_is_a_command_not_a_body() {
+    fn the_two_commands_are_commands_not_bodies() {
         assert_eq!(parse("doctor"), Ok(Command::Doctor));
+        assert_eq!(parse("probe"), Ok(Command::Probe));
     }
 
     /// The escape hatch for the one body that would otherwise be swallowed.
