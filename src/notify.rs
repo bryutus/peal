@@ -94,12 +94,21 @@ pub fn to(resolution: &Resolution, notification: &Notification) -> io::Result<De
 
     let plan = plan(accepts, notification);
     let bytes = match &plan {
-        Some(plan) => render::bytes(
-            plan.sequence,
-            plan.title.as_deref(),
-            &plan.body,
-            plan.id.as_deref(),
-        ),
+        // Wrapped whenever tmux is in the way, since it forwards none of these dialects
+        // on its own. The bell needs no wrapper: it is not an escape sequence, and tmux
+        // passes it through untouched.
+        Some(plan) => {
+            let bytes = render::bytes(
+                plan.sequence,
+                plan.title.as_deref(),
+                &plan.body,
+                plan.id.as_deref(),
+            );
+            match detect::inside_tmux() {
+                true => detect::query::through_tmux(&bytes),
+                false => bytes,
+            }
+        }
         None => b"\x07".to_vec(),
     };
 
