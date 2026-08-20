@@ -65,3 +65,12 @@ term_program   = ["Apple_Terminal"]
 term           = []
 accepts        = []                 # no OSC notification support; bell only
 verified       = true
+
+[[terminals]]
+id             = "wezterm"
+xtversion      = "WezTerm"
+term_program   = ["WezTerm"]
+term           = []                 # sets only xterm-256color, which names no terminal
+accepts        = []                 # nothing appeared, with notifications permitted
+verified       = true
+tested_version = "20240203-110809-5046fc22"
