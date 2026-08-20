@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  # Pull requests are checked on their own; pushing a branch that has one open would
+  # otherwise run everything twice.
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # Two platforms because the tty handling goes through libc directly, where the
+    # termios types differ — tcflag_t is 64 bits on macOS and 32 on Linux. Nothing in
+    # the crate is written per-platform, so a build that only ever ran on one would not
+    # notice the day that stops being true.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: cargo fmt --check
