@@ -35,26 +35,27 @@ pub fn open_tty() -> io::Result<Option<File>> {
 /// waiting out the whole timeout. The timeout remains the backstop for terminals that
 /// answer neither.
 pub fn xtversion(tty: &mut File, timeout: Duration) -> io::Result<String> {
-    let _raw = RawMode::enter(tty.as_raw_fd())?;
+    let _raw = RawMode::enter(tty.as_raw_fd(), timeout)?;
 
     tty.write_all(b"\x1b[>0q\x1b[c")?;
     tty.flush()?;
 
+    // The read blocks for at most VTIME, so the loop cannot spin; the deadline only
+    // bounds a terminal that keeps dribbling bytes without ever finishing its reply.
     let deadline = Instant::now() + timeout;
     let mut reply = Vec::new();
     let mut chunk = [0u8; 256];
     loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() || !wait_readable(tty.as_raw_fd(), remaining)? {
-            break;
-        }
         match tty.read(&mut chunk) {
+            // With VMIN at zero an empty read means the read timed out, not that the
+            // terminal went away. It is how a terminal that ignores both queries ends up
+            // here, so it is the normal way out of this loop, not a failure.
             Ok(0) => break,
             Ok(n) => reply.extend_from_slice(&chunk[..n]),
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) => return Err(e),
         }
-        if ends_with_da1(&reply) {
+        if ends_with_da1(&reply) || Instant::now() >= deadline {
             break;
         }
     }
@@ -78,25 +79,6 @@ fn ends_with_da1(reply: &[u8]) -> bool {
             .all(|b| b.is_ascii_digit() || matches!(b, b';' | b'?'))
 }
 
-fn wait_readable(fd: RawFd, timeout: Duration) -> io::Result<bool> {
-    let mut pollfd = libc::pollfd {
-        fd,
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    let millis = timeout.as_millis().min(i32::MAX as u128) as i32;
-    loop {
-        let ready = unsafe { libc::poll(&mut pollfd, 1, millis) };
-        if ready >= 0 {
-            return Ok(ready > 0);
-        }
-        let error = io::Error::last_os_error();
-        if error.kind() != io::ErrorKind::Interrupted {
-            return Err(error);
-        }
-    }
-}
-
 /// Puts the terminal in raw mode and restores the previous settings on drop, including
 /// when the read below fails partway.
 struct RawMode {
@@ -105,7 +87,7 @@ struct RawMode {
 }
 
 impl RawMode {
-    fn enter(fd: RawFd) -> io::Result<Self> {
+    fn enter(fd: RawFd, read_timeout: Duration) -> io::Result<Self> {
         let mut previous = unsafe { std::mem::zeroed::<libc::termios>() };
         if unsafe { libc::tcgetattr(fd, &mut previous) } != 0 {
             return Err(io::Error::last_os_error());
@@ -114,8 +96,13 @@ impl RawMode {
         // Without ICANON the reply arrives without waiting for a newline the terminal
         // will never send; without ECHO it is not painted onto the user's screen.
         raw.c_lflag &= !(libc::ICANON | libc::ECHO);
+        // The read timeout lives here rather than in a poll() call: on macOS poll()
+        // reports POLLNVAL for a tty while still claiming the descriptor is ready, so it
+        // returns immediately and forever. termios does the waiting reliably instead.
+        // VMIN zero means "return whatever has arrived", VTIME caps how long to wait for
+        // it, counted in tenths of a second and stored in a single byte.
         raw.c_cc[libc::VMIN] = 0;
-        raw.c_cc[libc::VTIME] = 0;
+        raw.c_cc[libc::VTIME] = (read_timeout.as_millis() / 100).clamp(1, 255) as u8;
         if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) } != 0 {
             return Err(io::Error::last_os_error());
         }
