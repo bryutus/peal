@@ -6,6 +6,7 @@ use std::sync::LazyLock;
 use serde::Deserialize;
 
 pub mod detect;
+pub mod doctor;
 pub mod notify;
 
 /// The capability table, embedded at compile time so the binary stays self-contained.
@@ -27,6 +28,17 @@ pub enum Sequence {
 impl Sequence {
     /// Every dialect, for exhaustiveness checks in tests.
     pub const ALL: [Sequence; 3] = [Sequence::Osc9, Sequence::Osc777, Sequence::Osc99];
+}
+
+/// The name a dialect goes by, as opposed to the wire format in [`Capability::form`].
+impl std::fmt::Display for Sequence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Sequence::Osc9 => "OSC 9",
+            Sequence::Osc777 => "OSC 777",
+            Sequence::Osc99 => "OSC 99",
+        })
+    }
 }
 
 /// What a dialect can express. A property of the sequence itself, not of any terminal.
@@ -161,6 +173,16 @@ mod tests {
                 "{}: no way to identify this terminal",
                 terminal.id
             );
+        }
+    }
+
+    #[test]
+    fn every_dialect_names_itself() {
+        for sequence in Sequence::ALL {
+            let name = sequence.to_string();
+            assert!(name.starts_with("OSC "), "{name}");
+            // The name is not the wire format; the form field is where that lives.
+            assert!(!name.contains(';'), "{name}");
         }
     }
 
