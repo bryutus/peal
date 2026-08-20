@@ -195,12 +195,17 @@ pub fn run() -> io::Result<String> {
     };
     let mut answers = BufReader::new(tty.try_clone()?);
 
+    // The version comes from what the terminal said just now, never from the table: a
+    // measurement records the release it was taken against, and the table's own figure
+    // may be several releases behind what is running.
     let (xtversion, version) = match &resolution {
-        Resolution::Known { terminal, .. } => (
+        Resolution::Known {
+            terminal, version, ..
+        } => (
             (!terminal.xtversion.is_empty()).then(|| terminal.xtversion.clone()),
-            terminal.tested_version.clone(),
+            version.clone(),
         ),
-        Resolution::UnknownButModern { name } => (Some(name.clone()), None),
+        Resolution::UnknownButModern { name, version } => (Some(name.clone()), version.clone()),
         _ => (None, None),
     };
 
@@ -403,7 +408,7 @@ mod tests {
     #[test]
     fn says_when_the_terminal_is_new_to_the_table() {
         let unknown = Measurement {
-            xtversion: Some("WezTerm".to_owned()),
+            xtversion: Some("Nonesuch".to_owned()),
             ..measured(vec![Sequence::Osc9])
         };
         let report = against_the_table(&unknown);
@@ -432,8 +437,8 @@ mod tests {
         // Unknown values stay in. A terminal-specific TERM peal has not seen is exactly
         // what a probe is for, and a human reads the entry before it is committed.
         assert_eq!(
-            identifying_term(Some("wezterm".to_owned())),
-            Some("wezterm".to_owned())
+            identifying_term(Some("nonesuch".to_owned())),
+            Some("nonesuch".to_owned())
         );
     }
 
