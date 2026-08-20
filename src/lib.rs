@@ -5,6 +5,8 @@ use std::sync::LazyLock;
 
 use serde::Deserialize;
 
+pub mod detect;
+
 /// The capability table, embedded at compile time so the binary stays self-contained.
 const TERMINALS_TOML: &str = include_str!("../data/terminals.toml");
 
@@ -39,7 +41,7 @@ pub struct Capability {
 }
 
 /// One terminal and the dialects it accepts.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Terminal {
     pub id: String,
