@@ -18,6 +18,7 @@ peal — raise a desktop notification from the terminal
     --name <name>     Sending again under the same name replaces the notification
                       rather than adding another. Only kitty can do this so far.
     --                Everything after this is the body, even \"doctor\".
+    -V, --version     The version of peal that is running.
 
     doctor            Report what peal will do on this terminal, and send one
                       notification to check it against.
@@ -31,6 +32,10 @@ fn main() -> ExitCode {
     match Command::parse(&arguments) {
         Ok(Command::Help) => {
             print!("{USAGE}");
+            ExitCode::SUCCESS
+        }
+        Ok(Command::Version) => {
+            println!("peal {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
         Ok(Command::Doctor) => match doctor::run() {
@@ -110,6 +115,7 @@ enum Command {
     Doctor,
     Probe,
     Help,
+    Version,
 }
 
 impl Command {
@@ -124,6 +130,7 @@ impl Command {
                 "doctor" => return Ok(Command::Doctor),
                 "probe" => return Ok(Command::Probe),
                 "-h" | "--help" => return Ok(Command::Help),
+                "-V" | "--version" => return Ok(Command::Version),
                 _ => {}
             }
         }
@@ -143,6 +150,7 @@ impl Command {
                 "--title" => title = Some(take("--title")?),
                 "--name" => name = Some(take("--name")?),
                 "-h" | "--help" => return Ok(Command::Help),
+                "-V" | "--version" => return Ok(Command::Version),
                 // Everything after `--` is the body, which is how a body of "doctor" or
                 // one starting with a dash gets through.
                 "--" => {
@@ -227,6 +235,19 @@ mod tests {
     fn nothing_at_all_asks_for_help() {
         assert_eq!(parse(""), Ok(Command::Help));
         assert_eq!(parse("--help"), Ok(Command::Help));
+    }
+
+    /// Capital `-V`, as every other command-line program spells it; lowercase `-v` is
+    /// left free for the verbosity flag it usually means.
+    #[test]
+    fn asks_which_version_is_running() {
+        assert_eq!(parse("--version"), Ok(Command::Version));
+        assert_eq!(parse("-V"), Ok(Command::Version));
+        // A body of "--version" is still reachable, the same way "doctor" is.
+        assert_eq!(
+            parse("-- --version"),
+            Ok(Command::Notify(Notification::new("--version")))
+        );
     }
 
     #[test]
