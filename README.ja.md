@@ -43,7 +43,7 @@ XTVERSION に応答する未登録のターミナルには、OSC 9 シーケン�
 ## インストール
 
 ```console
-$ cargo install --git https://github.com/bryutus/peal
+$ cargo install peal
 ```
 
 ## 使い方

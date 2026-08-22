@@ -42,7 +42,7 @@ Completely unidentifiable terminals trigger a bell.
 ## Installing
 
 ```console
-$ cargo install --git https://github.com/bryutus/peal
+$ cargo install peal
 ```
 
 ## Using it
