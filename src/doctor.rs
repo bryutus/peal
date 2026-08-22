@@ -91,8 +91,8 @@ fn terminal_section(out: &mut String, resolution: &Resolution, inside_tmux: bool
             }
             out.push_str(
                 "  Answering XTVERSION at all suggests it will take an OSC 9, since every\n\
-                 \x20 terminal measured so far did. That is an extrapolation from four terminals\n\
-                 \x20 on one platform, not a fact about this one.\n",
+                 \x20 terminal measured so far did. That is an extrapolation from the terminals\n\
+                 \x20 that have been measured, not a fact about this one.\n",
             );
         }
         Resolution::Unknown => {
