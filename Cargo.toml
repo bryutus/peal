@@ -2,8 +2,15 @@
 name = "peal"
 version = "0.1.0"
 edition = "2024"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+description = "Raise a desktop notification from the terminal, in whatever dialect the terminal understands."
+repository = "https://github.com/bryutus/peal"
+license = "MIT OR Apache-2.0"
+keywords = ["notification", "terminal", "tty", "osc", "cli"]
+categories = ["command-line-utilities"]
+# The measured capability table is compiled in, so it has to ship in the package.
+# Every pattern is anchored: unanchored ones match at any depth, which pulled
+# .scratch/README.md into the package alongside the real one.
+include = ["/src/**/*", "/data/**/*", "/README.md", "/LICENSE-*"]
 
 [dependencies]
 libc = "0.2.180"

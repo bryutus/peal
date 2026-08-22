@@ -41,8 +41,8 @@ pub enum Resolution {
     ///
     /// It answers XTVERSION, which every OSC-capable terminal measured so far also does,
     /// so OSC 9 is the reasonable guess. It stays a guess: the sample behind that
-    /// reasoning is four terminals on one platform, and this variant exists so callers
-    /// and `doctor` can say so rather than presenting it as fact.
+    /// reasoning is only the terminals that have been measured, and this variant exists
+    /// so callers and `doctor` can say so rather than presenting it as fact.
     UnknownButModern {
         name: String,
         version: Option<String>,
