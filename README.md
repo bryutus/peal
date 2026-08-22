@@ -35,7 +35,8 @@ Peal therefore records what was actually observed, and [`peal probe`](#adding-a-
 The actual observations are detailed in [`data/terminals.toml`](data/terminals.toml).
 Each entry was confirmed through direct screen inspection rather than transcribed from documentation.
 
-An unregistered terminal responding to XTVERSION receives an OSC 9 sequence.
+An unregistered terminal responding to XTVERSION receives an OSC 9 sequence, on the reasoning that every terminal measured so far accepted one.
+That is an extrapolation, and `peal doctor` says so rather than presenting it as fact.
 Completely unidentifiable terminals trigger a bell.
 
 ## Installing
@@ -72,7 +73,7 @@ $ peal doctor
 
 It reports the identified terminal and the underlying evidence, specifies the resulting notification formats, and subsequently transmits a notification to serve as a baseline for comparison.
 
-The most common answer is the least interesting one: check that notifications are enabled for your terminal.
+First, check that notifications are enabled for your terminal.
 From inside the program, a terminal lacking permission to send notifications is indistinguishable from peal sending incorrect bytes; consequently, doctor asks whether the notification appeared rather than asserting that it did.
 
 ## Under tmux
@@ -98,12 +99,13 @@ $ peal probe
 It sends each dialect in turn and asks whether a notification appeared, then prints an entry for `data/terminals.toml`.
 Open an issue with that output — or a pull request adding it — and say which terminal and version it came from.
 
-Probing under tmux works, but the entry it prints is thinner: tmux overwrites TERM_PROGRAM and TERM with its own, so neither can be recorded, and the report says as much. An entry measured outside tmux carries more.
+Probing under tmux works, but the entry it prints is thinner: tmux overwrites TERM_PROGRAM and TERM with its own, so neither can be recorded, and the report says as much.
+An entry measured outside tmux carries more.
 
-Please check your notification permissions before reporting a terminal that appears to accept nothing. A terminal that generates no notifications and one that lacks permission look identical from here, and the probe will report them as such.
+Please check your notification permissions before reporting a terminal that appears to accept nothing.
+A terminal that generates no notifications and one that lacks permission look identical from here, and the probe says so.
 
 Any terminal, on any operating system, is worth adding.
-
 
 ## License
 
