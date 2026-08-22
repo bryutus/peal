@@ -9,6 +9,10 @@ use crate::{Database, Terminal};
 pub enum Evidence {
     /// The terminal named itself in reply to XTVERSION.
     XtVersion,
+    /// The terminal named itself, but only because the question was passed through tmux
+    /// to reach it. Worth telling apart: it means tmux's `allow-passthrough` is on, and
+    /// so everything else peal sends will reach the terminal too.
+    XtVersionThroughTmux,
     TermProgram,
     Term,
 }

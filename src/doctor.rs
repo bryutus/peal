@@ -111,18 +111,49 @@ fn terminal_section(out: &mut String, resolution: &Resolution, inside_tmux: bool
         }
     }
     if inside_tmux {
-        out.push_str(
-            "\n  Running under tmux. tmux answers XTVERSION on its own behalf, which would\n\
-             \x20 name the multiplexer rather than the terminal drawing it, so peal did not\n\
-             \x20 ask and used the environment instead. Whatever the outer terminal can do\n\
-             \x20 beyond what this says is not visible from here.\n",
-        );
+        tmux_section(out, resolution);
     }
+}
+
+/// What running under tmux costs, which depends entirely on one tmux setting.
+///
+/// tmux drops escape sequences it does not recognise instead of forwarding them, so
+/// every dialect peal sends has to be wrapped to reach the terminal beyond it — and the
+/// wrapper only works where `allow-passthrough` is on. When the terminal answered
+/// through that wrapper, it is on and nothing is lost. When it did not, nothing peal
+/// sends is arriving either, and saying so without saying what to do about it would be
+/// no use to anyone.
+fn tmux_section(out: &mut String, resolution: &Resolution) {
+    let reached = matches!(
+        resolution,
+        Resolution::Known {
+            evidence: Evidence::XtVersionThroughTmux,
+            ..
+        } | Resolution::UnknownButModern { .. }
+    );
+    out.push('\n');
+    if reached {
+        out.push_str(
+            "  Running under tmux, with allow-passthrough on. The terminal answered\n\
+             \x20 through it, so everything below reaches the terminal the same way.\n",
+        );
+        return;
+    }
+    out.push_str(
+        "  Running under tmux, and nothing peal sends is getting past it. tmux drops\n\
+         \x20 escape sequences it does not recognise, which is every notification dialect\n\
+         \x20 there is, so they have to be wrapped to reach the terminal beyond — and the\n\
+         \x20 wrapper needs one setting that is off here:\n\n\
+         \x20   tmux set -g allow-passthrough on\n\n\
+         \x20 With it on, peal identifies the outer terminal and sends to it as usual.\n\
+         \x20 Without it, the bell is all that gets through.\n",
+    );
 }
 
 fn describe(evidence: Evidence) -> &'static str {
     match evidence {
         Evidence::XtVersion => "it named itself when asked",
+        Evidence::XtVersionThroughTmux => "it named itself when asked through tmux",
         Evidence::TermProgram => "recognised from TERM_PROGRAM, since it answers no query",
         Evidence::Term => {
             "recognised from TERM, since it answers no query and sets no TERM_PROGRAM"
@@ -376,10 +407,25 @@ mod tests {
         assert!(!matching.contains("You are running"), "{matching}");
     }
 
+    /// The reader can turn one setting on and have everything work, so the report has to
+    /// name it rather than describing the loss and stopping there.
     #[test]
-    fn explains_why_tmux_limits_what_it_can_say() {
-        let report = report(&known("kitty", Evidence::Term), true, None);
-        assert!(report.contains("tmux"), "{report}");
+    fn names_the_tmux_setting_that_would_fix_it() {
+        let report = report(&Resolution::Unknown, true, None);
+        assert!(report.contains("allow-passthrough on"), "{report}");
+        assert!(
+            report.contains("nothing peal sends is getting past it"),
+            "{report}"
+        );
+    }
+
+    /// Where the answer came back through tmux, the setting is already on and the same
+    /// wrapper carries the notifications.
+    #[test]
+    fn says_nothing_is_lost_when_passthrough_works() {
+        let report = report(&known("kitty", Evidence::XtVersionThroughTmux), true, None);
+        assert!(report.contains("allow-passthrough on"), "{report}");
+        assert!(!report.contains("getting past it"), "{report}");
     }
 
     /// Without a terminal the first section has said everything; the rest would only

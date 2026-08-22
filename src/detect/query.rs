@@ -28,16 +28,52 @@ pub fn open_tty() -> io::Result<Option<File>> {
     }
 }
 
+/// Whether a sequence goes straight to the terminal or has to be handed through tmux.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Route {
+    #[default]
+    Direct,
+    ThroughTmux,
+}
+
+/// Wraps a sequence so that tmux passes it to the terminal it is drawn in instead of
+/// interpreting it.
+///
+/// tmux drops escape sequences it does not recognise rather than forwarding them, which
+/// is every notification dialect. The wrapper is `DCS tmux; ... ST` with each ESC in the
+/// payload doubled, so that the inner sequence cannot terminate the outer one.
+///
+/// It only works where tmux's own `allow-passthrough` is on. Where it is off the wrapped
+/// sequence goes nowhere, which is the same place an unwrapped one went, so wrapping
+/// costs nothing and is not worth trying to detect first.
+pub fn through_tmux(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len() + 16);
+    out.extend_from_slice(b"\x1bPtmux;");
+    for byte in bytes {
+        if *byte == 0x1b {
+            out.push(0x1b);
+        }
+        out.push(*byte);
+    }
+    out.extend_from_slice(b"\x1b\\");
+    out
+}
+
 /// Sends XTVERSION and returns whatever the terminal replied, raw.
 ///
 /// A DA1 query rides along behind it. Terminals that ignore XTVERSION still answer DA1,
 /// so its reply marks the end of the conversation and spares the common case from
 /// waiting out the whole timeout. The timeout remains the backstop for terminals that
 /// answer neither.
-pub fn xtversion(tty: &mut File, timeout: Duration) -> io::Result<String> {
+pub fn xtversion(tty: &mut File, timeout: Duration, route: Route) -> io::Result<String> {
     let _raw = RawMode::enter(tty.as_raw_fd(), timeout)?;
 
-    tty.write_all(b"\x1b[>0q\x1b[c")?;
+    let query: &[u8] = b"\x1b[>0q\x1b[c";
+    let query = match route {
+        Route::Direct => query.to_vec(),
+        Route::ThroughTmux => through_tmux(query),
+    };
+    tty.write_all(&query)?;
     tty.flush()?;
 
     // The read blocks for at most VTIME, so the loop cannot spin; the deadline only
@@ -119,6 +155,22 @@ impl Drop for RawMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The payload's own ESC bytes are doubled so that the first of them cannot be read
+    /// as the end of the wrapper.
+    #[test]
+    fn wraps_a_sequence_for_tmux() {
+        assert_eq!(through_tmux(b"\x1b[>0q"), b"\x1bPtmux;\x1b\x1b[>0q\x1b\\");
+        assert_eq!(
+            through_tmux(b"\x1b]9;done\x07"),
+            b"\x1bPtmux;\x1b\x1b]9;done\x07\x1b\\"
+        );
+    }
+
+    #[test]
+    fn wraps_a_sequence_with_no_escapes_at_all() {
+        assert_eq!(through_tmux(b"\x07"), b"\x1bPtmux;\x07\x1b\\");
+    }
 
     #[test]
     fn recognises_a_da1_reply() {
