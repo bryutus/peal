@@ -7,10 +7,13 @@ repository = "https://github.com/bryutus/peal"
 license = "MIT OR Apache-2.0"
 keywords = ["notification", "terminal", "tty", "osc", "cli"]
 categories = ["command-line-utilities"]
+# edition 2024 needs 1.85; naming it turns "unknown feature" errors on an older
+# toolchain into one line that says which release is wanted.
+rust-version = "1.85"
 # The measured capability table is compiled in, so it has to ship in the package.
 # Every pattern is anchored: unanchored ones match at any depth, which pulled
 # .scratch/README.md into the package alongside the real one.
-include = ["/src/**/*", "/data/**/*", "/README.md", "/LICENSE-*"]
+include = ["/src/**/*", "/data/**/*", "/README*.md", "/LICENSE-*"]
 
 [dependencies]
 libc = "0.2.180"
