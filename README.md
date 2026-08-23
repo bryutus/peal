@@ -97,7 +97,7 @@ $ peal probe
 ```
 
 It sends each dialect in turn and asks whether a notification appeared, then prints an entry for `data/terminals.toml`.
-Open an issue with that output — or a pull request adding it — and say which terminal and version it came from.
+Open an issue with that output — there is [a form for it](.github/ISSUE_TEMPLATE/terminal-report.yml) — or a pull request adding it, and say which terminal and version it came from.
 
 Probing under tmux works, but the entry it prints is thinner: tmux overwrites TERM_PROGRAM and TERM with its own, so neither can be recorded, and the report says as much.
 An entry measured outside tmux carries more.
