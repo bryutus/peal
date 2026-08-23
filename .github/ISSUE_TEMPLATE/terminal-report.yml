@@ -1,0 +1,61 @@
+name: Terminal report
+description: Report what a terminal accepts, measured with `peal probe`
+title: "Terminal: "
+labels: ["terminal"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        `data/terminals.toml` is a record of measurement rather than documentation, so
+        an entry only goes in once someone has watched a terminal answer. Running
+        `peal probe` produces that entry: it sends each dialect in turn and asks whether
+        a notification appeared.
+
+        A terminal already in the table is still worth reporting when the probe
+        disagrees with it, or when the version differs from the one recorded there.
+
+  - type: input
+    id: terminal
+    attributes:
+      label: Terminal and version
+      placeholder: WezTerm 20240203-110809
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: Including the version, since a notification daemon is part of the system rather than the terminal.
+      placeholder: Fedora 41 / GNOME 47
+    validations:
+      required: true
+
+  - type: textarea
+    id: probe
+    attributes:
+      label: Output of `peal probe`
+      description: The whole output, notes and entry alike. The notes say what the entry had to leave out.
+      render: text
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: permission
+    attributes:
+      label: Before reporting a terminal that appears to accept nothing
+      description: |
+        A terminal that raises no notifications and one that is not permitted to look
+        identical from here. Skip this if something did appear.
+      options:
+        - label: I found this terminal in my notification settings and it is permitted to post.
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: |
+        Whether the probe ran under tmux, whether the terminal was configured away from
+        its defaults, or anything that would make the measurement hard to reproduce.
+    validations:
+      required: false
