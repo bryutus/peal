@@ -150,13 +150,20 @@ fn tmux_section(out: &mut String, resolution: &Resolution) {
     );
 }
 
-fn describe(evidence: Evidence) -> &'static str {
+fn describe(evidence: Evidence) -> String {
     match evidence {
-        Evidence::XtVersion => "it named itself when asked",
-        Evidence::XtVersionThroughTmux => "it named itself when asked through tmux",
-        Evidence::TermProgram => "recognised from TERM_PROGRAM, since it answers no query",
+        Evidence::XtVersion => "it named itself when asked".to_owned(),
+        Evidence::XtVersionThroughTmux => "it named itself when asked through tmux".to_owned(),
+        Evidence::TermProgram => {
+            "recognised from TERM_PROGRAM, since it answers no query".to_owned()
+        }
+        // Named rather than described: which variable it was is the whole of the
+        // evidence, and a reader who doubts the answer can check it themselves.
+        Evidence::EnvMarker(name) => {
+            format!("recognised from {name}, since it answers no query and sets no TERM_PROGRAM")
+        }
         Evidence::Term => {
-            "recognised from TERM, since it answers no query and sets no TERM_PROGRAM"
+            "recognised from TERM, since it answers no query and sets no TERM_PROGRAM".to_owned()
         }
     }
 }

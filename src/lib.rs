@@ -77,6 +77,10 @@ pub struct Terminal {
     pub xtversion: String,
     pub term_program: Vec<String>,
     pub term: Vec<String>,
+    /// Variables whose mere presence names this terminal, as Windows Terminal's
+    /// `WT_SESSION` does. Only the name is evidence: the values are per-session and
+    /// would match nothing if they were compared.
+    pub env: Vec<String>,
     /// Ordered, richest first. Sending goes the other way and takes the least expressive
     /// entry that still carries what was asked for.
     pub accepts: Vec<Sequence>,
@@ -184,6 +188,7 @@ mod tests {
             assert!(
                 !terminal.xtversion.is_empty()
                     || !terminal.term_program.is_empty()
+                    || !terminal.env.is_empty()
                     || !terminal.term.is_empty(),
                 "{}: no way to identify this terminal",
                 terminal.id

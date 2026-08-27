@@ -2,7 +2,8 @@
 //!
 //! Two routes, because neither covers the field on its own: XTVERSION is the only way
 //! to recognise a terminal that sets no `TERM_PROGRAM` (kitty), and the environment is
-//! the only way to recognise one that does not answer XTVERSION (Terminal.app).
+//! the only way to recognise one that does not answer XTVERSION (Terminal.app) — down to
+//! a variable whose bare presence is the only name a terminal gives (Windows Terminal).
 
 pub mod env;
 pub mod parse;
@@ -60,6 +61,7 @@ pub enum Resolution {
 pub fn resolve() -> std::io::Result<Resolution> {
     let term_program = std::env::var("TERM_PROGRAM").ok();
     let term = std::env::var("TERM").ok();
+    let markers = markers_present();
 
     let Some(mut tty) = query::open_tty()? else {
         return Ok(Resolution::NoTty);
@@ -80,8 +82,24 @@ pub fn resolve() -> std::io::Result<Resolution> {
         xtversion_version: parse::terminal_version(&reply),
         route,
         term_program: term_program.as_deref(),
+        env_markers: &markers,
         term: term.as_deref(),
     }))
+}
+
+/// The marker variables that are set here, out of those the table names.
+///
+/// Only the names the table already knows are looked up: a variable no entry mentions
+/// could not identify anything, and reading the whole environment to find out would say
+/// nothing more.
+fn markers_present() -> Vec<&'static str> {
+    env::marker_names(database())
+        .filter(|name| {
+            std::env::var(name)
+                .ok()
+                .is_some_and(|value| !value.is_empty())
+        })
+        .collect()
 }
 
 /// Whether this process is running inside tmux.
@@ -100,6 +118,9 @@ pub struct Signals<'a> {
     /// How the question reached the terminal, which decides what an answer proves.
     pub route: Route,
     pub term_program: Option<&'a str>,
+    /// The marker variables found set, by name. Their values say nothing — a session id
+    /// matches no table entry — so only the names travel.
+    pub env_markers: &'a [&'static str],
     pub term: Option<&'a str>,
 }
 
@@ -111,6 +132,7 @@ pub fn resolve_from(signals: Signals<'_>) -> Resolution {
         xtversion_version,
         route,
         term_program,
+        env_markers,
         term,
     } = signals;
 
@@ -131,7 +153,7 @@ pub fn resolve_from(signals: Signals<'_>) -> Resolution {
         }
         // The environment still gets a say: a terminal we do not recognise by name may
         // yet be one the table knows, and a match there is firmer than the guess below.
-        if let Some((terminal, evidence)) = env::by_env(db, term_program, term) {
+        if let Some((terminal, evidence)) = env::by_env(db, term_program, env_markers, term) {
             return Resolution::Known {
                 terminal,
                 evidence,
@@ -144,7 +166,7 @@ pub fn resolve_from(signals: Signals<'_>) -> Resolution {
         };
     }
 
-    match env::by_env(db, term_program, term) {
+    match env::by_env(db, term_program, env_markers, term) {
         // A terminal that answers no XTVERSION reports no version either; the table
         // knows what it can do, not which release is running.
         Some((terminal, evidence)) => Resolution::Known {
@@ -275,6 +297,21 @@ mod tests {
                 name: "Nonesuch".to_owned(),
                 version: Some("20260101-abc".to_owned()),
             }
+        );
+    }
+
+    /// Windows Terminal answers no query and sets no variable the other two channels
+    /// read; without the marker it would be indistinguishable from any other terminal.
+    #[test]
+    fn identifies_a_terminal_by_a_marker_variable_alone() {
+        let resolution = resolve_from(Signals {
+            env_markers: &["WT_SESSION"],
+            term: Some("xterm-256color"),
+            ..Signals::default()
+        });
+        assert_eq!(
+            known(&resolution),
+            ("windows-terminal", Evidence::EnvMarker("WT_SESSION"))
         );
     }
 

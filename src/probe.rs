@@ -21,6 +21,10 @@ pub struct Measurement {
     pub version: Option<String>,
     pub term_program: Option<String>,
     pub term: Option<String>,
+    /// Marker variables found set that the table already names, which is all a probe can
+    /// report: a variable no entry mentions might name this terminal or might name
+    /// anything at all, and only measuring another terminal would tell the difference.
+    pub env: Vec<String>,
     /// Every dialect that raised a notification, richest first.
     pub accepts: Vec<Sequence>,
     /// The operating system it was measured on, which the table does not record because
@@ -36,6 +40,10 @@ pub struct Measurement {
 
 impl Measurement {
     /// The id this terminal should go by, derived the way the existing entries were.
+    ///
+    /// A marker variable is deliberately not a source. `WT_SESSION` names a session, not
+    /// a terminal, and no rule turns it into "windows-terminal" — so a terminal known
+    /// only by its marker comes out "unknown" and is named by whoever writes the entry.
     pub fn id(&self) -> String {
         let source = self
             .xtversion
@@ -85,6 +93,12 @@ pub fn entry(measurement: &Measurement) -> String {
         "term           = {}",
         quoted(measurement.term.as_ref())
     );
+    let markers: Vec<String> = measurement
+        .env
+        .iter()
+        .map(|name| format!("\"{name}\""))
+        .collect();
+    let _ = writeln!(out, "env            = [{}]", markers.join(", "));
     let _ = writeln!(out, "accepts        = [{}]", accepts.join(", "));
     out.push_str("verified       = true\n");
     if let Some(version) = &measurement.version {
@@ -257,11 +271,15 @@ pub fn run() -> io::Result<String> {
     // Under tmux both variables describe the multiplexer, not the terminal beyond it:
     // TERM_PROGRAM is overwritten with "tmux" and TERM with one of its own. Recording
     // either would make every terminal running under tmux look like this one.
-    let (term_program, term) = match detect::inside_tmux() {
-        true => (None, None),
+    // A marker variable survives tmux where these two do not, but a marker names the
+    // terminal that set it, which under tmux is whichever client started the server
+    // rather than the one attached now. Left out for the same reason as the others.
+    let (term_program, term, env) = match detect::inside_tmux() {
+        true => (None, None, Vec::new()),
         false => (
             nonempty(std::env::var("TERM_PROGRAM").ok()),
             identifying_term(nonempty(std::env::var("TERM").ok())),
+            markers_present(),
         ),
     };
 
@@ -270,6 +288,7 @@ pub fn run() -> io::Result<String> {
         version,
         term_program,
         term,
+        env,
         accepts,
         os: std::env::consts::OS,
         through_tmux: detect::inside_tmux(),
@@ -290,15 +309,28 @@ pub fn run() -> io::Result<String> {
     Ok(out)
 }
 
+/// Marker variables the table names that are set here.
+fn markers_present() -> Vec<String> {
+    detect::env::marker_names(database())
+        .filter(|name| {
+            std::env::var(name)
+                .ok()
+                .is_some_and(|value| !value.is_empty())
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
 fn nonempty(value: Option<String>) -> Option<String> {
     value.filter(|value| !value.is_empty())
 }
 
 /// What the entry had to leave out, and what that costs.
 fn identification_note(measurement: &Measurement) -> Option<String> {
-    let identifiable = measurement.xtversion.is_some()
+    let named = measurement.xtversion.is_some()
         || measurement.term_program.is_some()
         || measurement.term.is_some();
+    let identifiable = named || !measurement.env.is_empty();
     if !identifiable {
         return Some(
             "  This terminal cannot be identified. It gave no name of its own, and the\n\
@@ -307,6 +339,18 @@ fn identification_note(measurement: &Measurement) -> Option<String> {
              \x20 something that can be acted on yet.\n"
                 .to_owned(),
         );
+    }
+
+    // A marker identifies the terminal without naming it, so the id cannot be derived
+    // the way every other entry's was. Saying so beats leaving "unknown" to be pasted in.
+    if !named {
+        let markers = measurement.env.join(", ");
+        return Some(format!(
+            "  Identified only by {markers}, which is set by this terminal and by nothing\n\
+             \x20 else, but names a session rather than the terminal. There is no rule that\n\
+             \x20 turns it into a name, so the id below reads \"unknown\" — replace it with\n\
+             \x20 this terminal's name before the entry goes in.\n"
+        ));
     }
 
     // Under tmux the environment describes tmux, so the name the terminal gave is the
@@ -363,6 +407,7 @@ mod tests {
             version: Some("1.3.1".to_owned()),
             term_program: Some("ghostty".to_owned()),
             term: Some("xterm-ghostty".to_owned()),
+            env: vec![],
             accepts,
             os: "macos",
             through_tmux: false,
@@ -385,6 +430,34 @@ mod tests {
         assert!(terminal.verified);
     }
 
+    /// Windows Terminal is identified by a marker and by nothing else, so the entry has
+    /// to carry it — and has to say that the id it prints is not the terminal's name.
+    #[test]
+    fn an_entry_identified_only_by_a_marker_says_so() {
+        let measurement = Measurement {
+            xtversion: None,
+            version: Some("1.24.11911.0".to_owned()),
+            term_program: None,
+            term: None,
+            env: vec!["WT_SESSION".to_owned()],
+            accepts: vec![],
+            os: "linux",
+            through_tmux: false,
+        };
+        let text = entry(&measurement);
+        assert!(text.contains("env            = [\"WT_SESSION\"]"), "{text}");
+        assert_eq!(measurement.id(), "unknown");
+
+        let note = identification_note(&measurement).expect("a note about the id");
+        assert!(note.contains("WT_SESSION"), "{note}");
+        assert!(note.contains("replace it"), "{note}");
+
+        let appended = format!("{}\n{text}", include_str!("../data/terminals.toml"));
+        let parsed: crate::Database = toml::from_str(&appended).expect("the entry should parse");
+        let terminal = parsed.terminals.last().expect("the appended terminal");
+        assert_eq!(terminal.env, ["WT_SESSION"]);
+    }
+
     /// A terminal that answers no XTVERSION leaves the field empty rather than absent,
     /// which is how the table records Terminal.app.
     #[test]
@@ -394,6 +467,7 @@ mod tests {
             version: None,
             term_program: Some("Apple_Terminal".to_owned()),
             term: None,
+            env: vec![],
             accepts: vec![],
             os: "macos",
             through_tmux: false,
