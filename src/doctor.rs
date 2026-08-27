@@ -321,6 +321,19 @@ mod tests {
         assert!(report.contains("0.48.2"), "{report}");
     }
 
+    /// Which variable identified the terminal is the whole of the evidence, so the
+    /// report names it rather than saying "an environment variable".
+    #[test]
+    fn names_the_variable_that_identified_the_terminal() {
+        let report = report(
+            &known("windows-terminal", Evidence::EnvMarker("WT_SESSION")),
+            false,
+            None,
+        );
+        assert!(report.contains("WT_SESSION"), "{report}");
+        assert!(report.contains("answers no query"), "{report}");
+    }
+
     /// The four requests must each get a line, or the reader cannot tell which case
     /// their own call falls into.
     #[test]
