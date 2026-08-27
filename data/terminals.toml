@@ -87,7 +87,7 @@ tested_version = "20240203-110809-5046fc22"
 
 # Windows Terminal answers no XTVERSION, sets no TERM_PROGRAM, and sets only
 # xterm-256color, so WT_SESSION is the only thing that names it. Its OSC notification
-# support is unmerged upstream (microsoft/terminal#20012); measured from WSL, where the
+# support is unmerged upstream (microsoft/terminal#20012). Measured from WSL, where the
 # sequences reach the same terminal they would from a native shell.
 [[terminals]]
 id             = "windows-terminal"

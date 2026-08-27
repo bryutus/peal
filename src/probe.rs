@@ -29,7 +29,11 @@ pub struct Measurement {
     pub accepts: Vec<Sequence>,
     /// The operating system it was measured on, which the table does not record because
     /// every entry in it so far came from the same one.
-    pub os: &'static str,
+    ///
+    /// Under WSL this says so rather than "linux": the shell runs on Linux but the
+    /// terminal drawing it is a Windows one, and "linux" would send a reader looking for
+    /// a terminal that was never involved.
+    pub os: String,
     /// Whether tmux stood between peal and the terminal.
     ///
     /// The dialects are wrapped to reach past it, so the answers should be the same
@@ -290,7 +294,7 @@ pub fn run() -> io::Result<String> {
         term,
         env,
         accepts,
-        os: std::env::consts::OS,
+        os: operating_system(),
         through_tmux: detect::inside_tmux(),
     };
 
@@ -307,6 +311,32 @@ pub fn run() -> io::Result<String> {
     out.push('\n');
     out.push_str(&entry(&measurement));
     Ok(out)
+}
+
+/// What to record as the system this was measured on.
+///
+/// WSL is worth naming because the terminal is not on the same system as the shell. The
+/// distro name comes from the environment and lands in a comment, so it is cut down to
+/// characters that cannot end the comment or the line.
+fn operating_system() -> String {
+    system_label(
+        std::env::consts::OS,
+        nonempty(std::env::var("WSL_DISTRO_NAME").ok()).as_deref(),
+    )
+}
+
+fn system_label(os: &str, wsl_distro: Option<&str>) -> String {
+    let Some(distro) = wsl_distro.filter(|distro| !distro.is_empty()) else {
+        return os.to_owned();
+    };
+    let distro: String = distro
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        .collect();
+    match distro.is_empty() {
+        true => "wsl".to_owned(),
+        false => format!("wsl ({distro})"),
+    }
 }
 
 /// Marker variables the table names that are set here.
@@ -409,7 +439,7 @@ mod tests {
             term: Some("xterm-ghostty".to_owned()),
             env: vec![],
             accepts,
-            os: "macos",
+            os: "macos".to_owned(),
             through_tmux: false,
         }
     }
@@ -430,6 +460,28 @@ mod tests {
         assert!(terminal.verified);
     }
 
+    /// WSL runs the shell on Linux and the terminal on Windows. Recording "linux" would
+    /// point a reader at a terminal that was never involved.
+    #[test]
+    fn names_wsl_rather_than_the_kernel_under_it() {
+        assert_eq!(system_label("linux", None), "linux");
+        assert_eq!(
+            system_label("linux", Some("Ubuntu-22.04")),
+            "wsl (Ubuntu-22.04)"
+        );
+    }
+
+    /// The distro name comes from the environment and lands in a comment, where a
+    /// newline would turn the rest of the entry into something else.
+    #[test]
+    fn a_distro_name_cannot_break_out_of_the_comment() {
+        assert_eq!(
+            system_label("linux", Some("Ubuntu\n[[terminals]]")),
+            "wsl (Ubuntuterminals)"
+        );
+        assert_eq!(system_label("linux", Some("\n")), "wsl");
+    }
+
     /// Windows Terminal is identified by a marker and by nothing else, so the entry has
     /// to carry it — and has to say that the id it prints is not the terminal's name.
     #[test]
@@ -441,7 +493,7 @@ mod tests {
             term: None,
             env: vec!["WT_SESSION".to_owned()],
             accepts: vec![],
-            os: "linux",
+            os: "linux".to_owned(),
             through_tmux: false,
         };
         let text = entry(&measurement);
@@ -469,7 +521,7 @@ mod tests {
             term: None,
             env: vec![],
             accepts: vec![],
-            os: "macos",
+            os: "macos".to_owned(),
             through_tmux: false,
         };
         let appended = format!(
