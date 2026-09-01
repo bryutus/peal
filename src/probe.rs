@@ -11,7 +11,7 @@ use std::io::{self, BufRead, BufReader, Write};
 
 use crate::detect::{self, Resolution};
 use crate::notify::render;
-use crate::{Sequence, database};
+use crate::{Sequence, Terminal, database};
 
 /// What one run of probe found out.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +63,25 @@ impl Measurement {
     }
 }
 
+/// The entry in the table that describes this measurement, if there is one.
+///
+/// The derived id finds every terminal that names itself. A terminal known only by a
+/// marker variable derives no id at all, so it is looked up by the marker instead —
+/// otherwise probe would call a terminal new to the table every time it measured one.
+fn identified(measurement: &Measurement) -> Option<&'static Terminal> {
+    if let Some(terminal) = database().terminal(&measurement.id()) {
+        return Some(terminal);
+    }
+    database().terminals.iter().find(|terminal| {
+        terminal.env.iter().any(|marker| {
+            measurement
+                .env
+                .iter()
+                .any(|m| m.eq_ignore_ascii_case(marker))
+        })
+    })
+}
+
 /// The entry to paste into `data/terminals.toml`, laid out the way the file already
 /// looks so it can go straight in.
 pub fn entry(measurement: &Measurement) -> String {
@@ -81,7 +100,10 @@ pub fn entry(measurement: &Measurement) -> String {
         false => format!("# Measured on {}\n", measurement.os),
     };
     out.push_str("[[terminals]]\n");
-    let _ = writeln!(out, "id             = \"{}\"", measurement.id());
+    // A terminal the table already names keeps that name, so an entry printed for one
+    // known only by its marker does not read "unknown" when the name is already known.
+    let id = identified(measurement).map_or_else(|| measurement.id(), |t| t.id.clone());
+    let _ = writeln!(out, "id             = \"{id}\"");
     let _ = writeln!(
         out,
         "xtversion      = \"{}\"",
@@ -113,11 +135,11 @@ pub fn entry(measurement: &Measurement) -> String {
 
 /// How the measurement stands against what the table already claims.
 pub fn against_the_table(measurement: &Measurement) -> String {
-    let id = measurement.id();
-    let Some(known) = database().terminal(&id) else {
+    let Some(known) = identified(measurement) else {
         return "  This terminal is not in the table yet. The entry below is what it should say.\n"
             .to_owned();
     };
+    let id = &known.id;
 
     if known.accepts == measurement.accepts {
         return format!(
@@ -372,9 +394,19 @@ fn identification_note(measurement: &Measurement) -> Option<String> {
     }
 
     // A marker identifies the terminal without naming it, so the id cannot be derived
-    // the way every other entry's was. Saying so beats leaving "unknown" to be pasted in.
+    // the way every other entry's was. Saying so beats leaving "unknown" to be pasted in
+    // — unless the table already carries the name, which the entry then borrows.
     if !named {
         let markers = measurement.env.join(", ");
+        if let Some(known) = identified(measurement) {
+            return Some(format!(
+                "  Identified only by {markers}, which is set by this terminal and by nothing\n\
+                 \x20 else, but names a session rather than the terminal. The table already\n\
+                 \x20 knows this terminal by that marker, as \"{}\", so the entry below\n\
+                 \x20 carries that name.\n",
+                known.id
+            ));
+        }
         return Some(format!(
             "  Identified only by {markers}, which is set by this terminal and by nothing\n\
              \x20 else, but names a session rather than the terminal. There is no rule that\n\
@@ -482,32 +514,67 @@ mod tests {
         assert_eq!(system_label("linux", Some("\n")), "wsl");
     }
 
-    /// Windows Terminal is identified by a marker and by nothing else, so the entry has
-    /// to carry it — and has to say that the id it prints is not the terminal's name.
-    #[test]
-    fn an_entry_identified_only_by_a_marker_says_so() {
-        let measurement = Measurement {
+    fn known_by_a_marker() -> Measurement {
+        Measurement {
             xtversion: None,
             version: Some("1.24.11911.0".to_owned()),
             term_program: None,
             term: None,
             env: vec!["WT_SESSION".to_owned()],
             accepts: vec![],
-            os: "linux".to_owned(),
+            os: "wsl (Ubuntu-22.04)".to_owned(),
             through_tmux: false,
-        };
+        }
+    }
+
+    /// Windows Terminal is identified by a marker and by nothing else, so the entry has
+    /// to carry it — and takes its name from the table, the marker deriving none.
+    #[test]
+    fn an_entry_identified_only_by_a_marker_carries_it() {
+        let measurement = known_by_a_marker();
         let text = entry(&measurement);
         assert!(text.contains("env            = [\"WT_SESSION\"]"), "{text}");
+        assert!(
+            text.contains("id             = \"windows-terminal\""),
+            "{text}"
+        );
         assert_eq!(measurement.id(), "unknown");
 
         let note = identification_note(&measurement).expect("a note about the id");
         assert!(note.contains("WT_SESSION"), "{note}");
-        assert!(note.contains("replace it"), "{note}");
+        assert!(note.contains("windows-terminal"), "{note}");
 
         let appended = format!("{}\n{text}", include_str!("../data/terminals.toml"));
         let parsed: crate::Database = toml::from_str(&appended).expect("the entry should parse");
         let terminal = parsed.terminals.last().expect("the appended terminal");
         assert_eq!(terminal.env, ["WT_SESSION"]);
+    }
+
+    /// A terminal the table knows only by its marker still has to be recognised as one
+    /// it already describes, or every run of probe would report it as new.
+    #[test]
+    fn matches_a_terminal_the_table_knows_only_by_its_marker() {
+        let report = against_the_table(&known_by_a_marker());
+        assert!(report.contains("\"windows-terminal\""), "{report}");
+        assert!(report.contains("agrees with it"), "{report}");
+    }
+
+    /// A marker the table does not name derives no id, and the entry says so rather than
+    /// leaving "unknown" to be pasted in as a name.
+    #[test]
+    fn an_unrecognised_marker_asks_for_a_name() {
+        let measurement = Measurement {
+            env: vec!["NONESUCH_SESSION".to_owned()],
+            ..known_by_a_marker()
+        };
+        assert!(entry(&measurement).contains("id             = \"unknown\""));
+
+        let note = identification_note(&measurement).expect("a note about the id");
+        assert!(note.contains("replace it"), "{note}");
+        assert!(
+            against_the_table(&measurement).contains("not in the table yet"),
+            "an unrecognised marker names no terminal"
+        );
     }
 
     /// A terminal that answers no XTVERSION leaves the field empty rather than absent,
