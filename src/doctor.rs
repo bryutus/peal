@@ -150,13 +150,20 @@ fn tmux_section(out: &mut String, resolution: &Resolution) {
     );
 }
 
-fn describe(evidence: Evidence) -> &'static str {
+fn describe(evidence: Evidence) -> String {
     match evidence {
-        Evidence::XtVersion => "it named itself when asked",
-        Evidence::XtVersionThroughTmux => "it named itself when asked through tmux",
-        Evidence::TermProgram => "recognised from TERM_PROGRAM, since it answers no query",
+        Evidence::XtVersion => "it named itself when asked".to_owned(),
+        Evidence::XtVersionThroughTmux => "it named itself when asked through tmux".to_owned(),
+        Evidence::TermProgram => {
+            "recognised from TERM_PROGRAM, since it answers no query".to_owned()
+        }
+        // Named rather than described: which variable it was is the whole of the
+        // evidence, and a reader who doubts the answer can check it themselves.
+        Evidence::EnvMarker(name) => {
+            format!("recognised from {name}, since it answers no query and sets no TERM_PROGRAM")
+        }
         Evidence::Term => {
-            "recognised from TERM, since it answers no query and sets no TERM_PROGRAM"
+            "recognised from TERM, since it answers no query and sets no TERM_PROGRAM".to_owned()
         }
     }
 }
@@ -312,6 +319,19 @@ mod tests {
         assert!(report.contains("kitty"), "{report}");
         assert!(report.contains("named itself"), "{report}");
         assert!(report.contains("0.48.2"), "{report}");
+    }
+
+    /// Which variable identified the terminal is the whole of the evidence, so the
+    /// report names it rather than saying "an environment variable".
+    #[test]
+    fn names_the_variable_that_identified_the_terminal() {
+        let report = report(
+            &known("windows-terminal", Evidence::EnvMarker("WT_SESSION")),
+            false,
+            None,
+        );
+        assert!(report.contains("WT_SESSION"), "{report}");
+        assert!(report.contains("answers no query"), "{report}");
     }
 
     /// The four requests must each get a line, or the reader cannot tell which case

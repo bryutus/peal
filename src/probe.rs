@@ -11,7 +11,7 @@ use std::io::{self, BufRead, BufReader, Write};
 
 use crate::detect::{self, Resolution};
 use crate::notify::render;
-use crate::{Sequence, database};
+use crate::{Sequence, Terminal, database};
 
 /// What one run of probe found out.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,11 +21,19 @@ pub struct Measurement {
     pub version: Option<String>,
     pub term_program: Option<String>,
     pub term: Option<String>,
+    /// Marker variables found set that the table already names, which is all a probe can
+    /// report: a variable no entry mentions might name this terminal or might name
+    /// anything at all, and only measuring another terminal would tell the difference.
+    pub env: Vec<String>,
     /// Every dialect that raised a notification, richest first.
     pub accepts: Vec<Sequence>,
     /// The operating system it was measured on, which the table does not record because
     /// every entry in it so far came from the same one.
-    pub os: &'static str,
+    ///
+    /// Under WSL this says so rather than "linux": the shell runs on Linux but the
+    /// terminal drawing it is a Windows one, and "linux" would send a reader looking for
+    /// a terminal that was never involved.
+    pub os: String,
     /// Whether tmux stood between peal and the terminal.
     ///
     /// The dialects are wrapped to reach past it, so the answers should be the same
@@ -36,6 +44,10 @@ pub struct Measurement {
 
 impl Measurement {
     /// The id this terminal should go by, derived the way the existing entries were.
+    ///
+    /// A marker variable is deliberately not a source. `WT_SESSION` names a session, not
+    /// a terminal, and no rule turns it into "windows-terminal" — so a terminal known
+    /// only by its marker comes out "unknown" and is named by whoever writes the entry.
     pub fn id(&self) -> String {
         let source = self
             .xtversion
@@ -49,6 +61,25 @@ impl Measurement {
             .trim_end_matches(".app")
             .to_owned()
     }
+}
+
+/// The entry in the table that describes this measurement, if there is one.
+///
+/// The derived id finds every terminal that names itself. A terminal known only by a
+/// marker variable derives no id at all, so it is looked up by the marker instead —
+/// otherwise probe would call a terminal new to the table every time it measured one.
+fn identified(measurement: &Measurement) -> Option<&'static Terminal> {
+    if let Some(terminal) = database().terminal(&measurement.id()) {
+        return Some(terminal);
+    }
+    database().terminals.iter().find(|terminal| {
+        terminal.env.iter().any(|marker| {
+            measurement
+                .env
+                .iter()
+                .any(|m| m.eq_ignore_ascii_case(marker))
+        })
+    })
 }
 
 /// The entry to paste into `data/terminals.toml`, laid out the way the file already
@@ -69,7 +100,10 @@ pub fn entry(measurement: &Measurement) -> String {
         false => format!("# Measured on {}\n", measurement.os),
     };
     out.push_str("[[terminals]]\n");
-    let _ = writeln!(out, "id             = \"{}\"", measurement.id());
+    // A terminal the table already names keeps that name, so an entry printed for one
+    // known only by its marker does not read "unknown" when the name is already known.
+    let id = identified(measurement).map_or_else(|| measurement.id(), |t| t.id.clone());
+    let _ = writeln!(out, "id             = \"{id}\"");
     let _ = writeln!(
         out,
         "xtversion      = \"{}\"",
@@ -85,6 +119,12 @@ pub fn entry(measurement: &Measurement) -> String {
         "term           = {}",
         quoted(measurement.term.as_ref())
     );
+    let markers: Vec<String> = measurement
+        .env
+        .iter()
+        .map(|name| format!("\"{name}\""))
+        .collect();
+    let _ = writeln!(out, "env            = [{}]", markers.join(", "));
     let _ = writeln!(out, "accepts        = [{}]", accepts.join(", "));
     out.push_str("verified       = true\n");
     if let Some(version) = &measurement.version {
@@ -95,11 +135,11 @@ pub fn entry(measurement: &Measurement) -> String {
 
 /// How the measurement stands against what the table already claims.
 pub fn against_the_table(measurement: &Measurement) -> String {
-    let id = measurement.id();
-    let Some(known) = database().terminal(&id) else {
+    let Some(known) = identified(measurement) else {
         return "  This terminal is not in the table yet. The entry below is what it should say.\n"
             .to_owned();
     };
+    let id = &known.id;
 
     if known.accepts == measurement.accepts {
         return format!(
@@ -257,11 +297,15 @@ pub fn run() -> io::Result<String> {
     // Under tmux both variables describe the multiplexer, not the terminal beyond it:
     // TERM_PROGRAM is overwritten with "tmux" and TERM with one of its own. Recording
     // either would make every terminal running under tmux look like this one.
-    let (term_program, term) = match detect::inside_tmux() {
-        true => (None, None),
+    // A marker variable survives tmux where these two do not, but a marker names the
+    // terminal that set it, which under tmux is whichever client started the server
+    // rather than the one attached now. Left out for the same reason as the others.
+    let (term_program, term, env) = match detect::inside_tmux() {
+        true => (None, None, Vec::new()),
         false => (
             nonempty(std::env::var("TERM_PROGRAM").ok()),
             identifying_term(nonempty(std::env::var("TERM").ok())),
+            markers_present(),
         ),
     };
 
@@ -270,8 +314,9 @@ pub fn run() -> io::Result<String> {
         version,
         term_program,
         term,
+        env,
         accepts,
-        os: std::env::consts::OS,
+        os: operating_system(),
         through_tmux: detect::inside_tmux(),
     };
 
@@ -290,15 +335,54 @@ pub fn run() -> io::Result<String> {
     Ok(out)
 }
 
+/// What to record as the system this was measured on.
+///
+/// WSL is worth naming because the terminal is not on the same system as the shell. The
+/// distro name comes from the environment and lands in a comment, so it is cut down to
+/// characters that cannot end the comment or the line.
+fn operating_system() -> String {
+    system_label(
+        std::env::consts::OS,
+        nonempty(std::env::var("WSL_DISTRO_NAME").ok()).as_deref(),
+    )
+}
+
+fn system_label(os: &str, wsl_distro: Option<&str>) -> String {
+    let Some(distro) = wsl_distro.filter(|distro| !distro.is_empty()) else {
+        return os.to_owned();
+    };
+    let distro: String = distro
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        .collect();
+    match distro.is_empty() {
+        true => "wsl".to_owned(),
+        false => format!("wsl ({distro})"),
+    }
+}
+
+/// Marker variables the table names that are set here.
+fn markers_present() -> Vec<String> {
+    detect::env::marker_names(database())
+        .filter(|name| {
+            std::env::var(name)
+                .ok()
+                .is_some_and(|value| !value.is_empty())
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
 fn nonempty(value: Option<String>) -> Option<String> {
     value.filter(|value| !value.is_empty())
 }
 
 /// What the entry had to leave out, and what that costs.
 fn identification_note(measurement: &Measurement) -> Option<String> {
-    let identifiable = measurement.xtversion.is_some()
+    let named = measurement.xtversion.is_some()
         || measurement.term_program.is_some()
         || measurement.term.is_some();
+    let identifiable = named || !measurement.env.is_empty();
     if !identifiable {
         return Some(
             "  This terminal cannot be identified. It gave no name of its own, and the\n\
@@ -307,6 +391,28 @@ fn identification_note(measurement: &Measurement) -> Option<String> {
              \x20 something that can be acted on yet.\n"
                 .to_owned(),
         );
+    }
+
+    // A marker identifies the terminal without naming it, so the id cannot be derived
+    // the way every other entry's was. Saying so beats leaving "unknown" to be pasted in
+    // — unless the table already carries the name, which the entry then borrows.
+    if !named {
+        let markers = measurement.env.join(", ");
+        if let Some(known) = identified(measurement) {
+            return Some(format!(
+                "  Identified only by {markers}, which is set by this terminal and by nothing\n\
+                 \x20 else, but names a session rather than the terminal. The table already\n\
+                 \x20 knows this terminal by that marker, as \"{}\", so the entry below\n\
+                 \x20 carries that name.\n",
+                known.id
+            ));
+        }
+        return Some(format!(
+            "  Identified only by {markers}, which is set by this terminal and by nothing\n\
+             \x20 else, but names a session rather than the terminal. There is no rule that\n\
+             \x20 turns it into a name, so the id below reads \"unknown\" — replace it with\n\
+             \x20 this terminal's name before the entry goes in.\n"
+        ));
     }
 
     // Under tmux the environment describes tmux, so the name the terminal gave is the
@@ -363,8 +469,9 @@ mod tests {
             version: Some("1.3.1".to_owned()),
             term_program: Some("ghostty".to_owned()),
             term: Some("xterm-ghostty".to_owned()),
+            env: vec![],
             accepts,
-            os: "macos",
+            os: "macos".to_owned(),
             through_tmux: false,
         }
     }
@@ -385,6 +492,91 @@ mod tests {
         assert!(terminal.verified);
     }
 
+    /// WSL runs the shell on Linux and the terminal on Windows. Recording "linux" would
+    /// point a reader at a terminal that was never involved.
+    #[test]
+    fn names_wsl_rather_than_the_kernel_under_it() {
+        assert_eq!(system_label("linux", None), "linux");
+        assert_eq!(
+            system_label("linux", Some("Ubuntu-22.04")),
+            "wsl (Ubuntu-22.04)"
+        );
+    }
+
+    /// The distro name comes from the environment and lands in a comment, where a
+    /// newline would turn the rest of the entry into something else.
+    #[test]
+    fn a_distro_name_cannot_break_out_of_the_comment() {
+        assert_eq!(
+            system_label("linux", Some("Ubuntu\n[[terminals]]")),
+            "wsl (Ubuntuterminals)"
+        );
+        assert_eq!(system_label("linux", Some("\n")), "wsl");
+    }
+
+    fn known_by_a_marker() -> Measurement {
+        Measurement {
+            xtversion: None,
+            version: Some("1.24.11911.0".to_owned()),
+            term_program: None,
+            term: None,
+            env: vec!["WT_SESSION".to_owned()],
+            accepts: vec![],
+            os: "wsl (Ubuntu-22.04)".to_owned(),
+            through_tmux: false,
+        }
+    }
+
+    /// Windows Terminal is identified by a marker and by nothing else, so the entry has
+    /// to carry it — and takes its name from the table, the marker deriving none.
+    #[test]
+    fn an_entry_identified_only_by_a_marker_carries_it() {
+        let measurement = known_by_a_marker();
+        let text = entry(&measurement);
+        assert!(text.contains("env            = [\"WT_SESSION\"]"), "{text}");
+        assert!(
+            text.contains("id             = \"windows-terminal\""),
+            "{text}"
+        );
+        assert_eq!(measurement.id(), "unknown");
+
+        let note = identification_note(&measurement).expect("a note about the id");
+        assert!(note.contains("WT_SESSION"), "{note}");
+        assert!(note.contains("windows-terminal"), "{note}");
+
+        let appended = format!("{}\n{text}", include_str!("../data/terminals.toml"));
+        let parsed: crate::Database = toml::from_str(&appended).expect("the entry should parse");
+        let terminal = parsed.terminals.last().expect("the appended terminal");
+        assert_eq!(terminal.env, ["WT_SESSION"]);
+    }
+
+    /// A terminal the table knows only by its marker still has to be recognised as one
+    /// it already describes, or every run of probe would report it as new.
+    #[test]
+    fn matches_a_terminal_the_table_knows_only_by_its_marker() {
+        let report = against_the_table(&known_by_a_marker());
+        assert!(report.contains("\"windows-terminal\""), "{report}");
+        assert!(report.contains("agrees with it"), "{report}");
+    }
+
+    /// A marker the table does not name derives no id, and the entry says so rather than
+    /// leaving "unknown" to be pasted in as a name.
+    #[test]
+    fn an_unrecognised_marker_asks_for_a_name() {
+        let measurement = Measurement {
+            env: vec!["NONESUCH_SESSION".to_owned()],
+            ..known_by_a_marker()
+        };
+        assert!(entry(&measurement).contains("id             = \"unknown\""));
+
+        let note = identification_note(&measurement).expect("a note about the id");
+        assert!(note.contains("replace it"), "{note}");
+        assert!(
+            against_the_table(&measurement).contains("not in the table yet"),
+            "an unrecognised marker names no terminal"
+        );
+    }
+
     /// A terminal that answers no XTVERSION leaves the field empty rather than absent,
     /// which is how the table records Terminal.app.
     #[test]
@@ -394,8 +586,9 @@ mod tests {
             version: None,
             term_program: Some("Apple_Terminal".to_owned()),
             term: None,
+            env: vec![],
             accepts: vec![],
-            os: "macos",
+            os: "macos".to_owned(),
             through_tmux: false,
         };
         let appended = format!(

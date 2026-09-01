@@ -35,6 +35,10 @@ Peal therefore records what was actually observed, and [`peal probe`](#adding-a-
 The actual observations are detailed in [`data/terminals.toml`](data/terminals.toml).
 Each entry was confirmed through direct screen inspection rather than transcribed from documentation.
 
+Some terminals answer no query and set neither `TERM_PROGRAM` nor a `TERM` of their own, and are named only by a variable they set: Windows Terminal by `WT_SESSION`, for one.
+An entry can record such a variable by name, since its value is a per-session id that matches nothing.
+The name is weak evidence — it is inherited by everything the terminal spawns — so it is consulted only after `TERM_PROGRAM`.
+
 An unregistered terminal responding to XTVERSION receives an OSC 9 sequence, on the reasoning that every terminal measured so far accepted one.
 That is an extrapolation, and `peal doctor` says so rather than presenting it as fact.
 Completely unidentifiable terminals trigger a bell.
@@ -98,6 +102,9 @@ $ peal probe
 
 It sends each dialect in turn and asks whether a notification appeared, then prints an entry for `data/terminals.toml`.
 Open an issue with that output — there is [a form for it](.github/ISSUE_TEMPLATE/terminal-report.yml) — or a pull request adding it, and say which terminal and version it came from.
+
+A terminal known only by a variable it sets comes out with `id = "unknown"`: a session id is not a name, and nothing turns one into one.
+Replace it with the terminal's name before the entry goes in — the probe says so too.
 
 Probing under tmux works, but the entry it prints is thinner: tmux overwrites TERM_PROGRAM and TERM with its own, so neither can be recorded, and the report says as much.
 An entry measured outside tmux carries more.
